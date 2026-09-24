@@ -1,5 +1,7 @@
 # ZariNotes
 
+<img src="assets/icon.svg" alt="" width="88">
+
 A minimal Markdown notes app written in Rust with [iced](https://iced.rs).
 
 ## Features
