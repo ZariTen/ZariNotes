@@ -6,6 +6,7 @@
 mod highlight;
 mod icons;
 mod live;
+mod theme;
 mod tree;
 
 use std::collections::HashSet;
@@ -17,18 +18,19 @@ use iced::widget::text_editor::{Binding, Cursor, KeyPress, Position};
 use iced::widget::{
     button, column, container, row, rule, scrollable, space, text, text_editor, text_input, tooltip,
 };
-use iced::{Element, Fill, Font, Padding, Subscription, Task, Theme, border};
+use iced::{
+    Border, Color, Element, Fill, Font, Padding, Shadow, Subscription, Task, Theme, Vector, border,
+};
 
 use live::Live;
+use theme::Appearance;
 use tree::Dir;
-
-const THEME: Theme = Theme::TokyoNight;
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
         .title(App::title)
         .subscription(App::subscription)
-        .theme(|_: &App| THEME)
+        .theme(|app: &App| theme::iced(app.appearance))
         .window_size((1100.0, 720.0))
         .run()
 }
@@ -51,6 +53,7 @@ struct App {
     filter: String,
     /// Problem worth showing in the footer. Routine success is not stored.
     notice: Option<String>,
+    appearance: Appearance,
 }
 
 enum Doc {
@@ -80,6 +83,7 @@ enum Message {
     NewNameChanged(String),
     FilterChanged(String),
     CreateNote,
+    SetAppearance(Appearance),
 }
 
 impl App {
@@ -95,6 +99,7 @@ impl App {
             new_name: String::new(),
             filter: String::new(),
             notice: None,
+            appearance: load_appearance(),
         };
 
         // Reopen the last workspace, if it still exists.
@@ -222,13 +227,20 @@ impl App {
                 Task::none()
             }
             Message::CreateNote => self.create_note(),
+            Message::SetAppearance(appearance) => {
+                if self.appearance != appearance {
+                    self.appearance = appearance;
+                    save_appearance(appearance);
+                }
+                Task::none()
+            }
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        // ── Editor ──────────────────────────────────────────────
+        let theme = theme::iced(self.appearance);
         let editor: Element<'_, Message> = match &self.doc {
-            Some(Doc::Live(live)) => live.view(&THEME).map(Message::Live),
+            Some(Doc::Live(live)) => live.view(&theme).map(Message::Live),
             Some(Doc::Source(content)) => text_editor(content)
                 .id(SOURCE_EDITOR_ID)
                 .placeholder("Start writing Markdown…")
@@ -242,30 +254,42 @@ impl App {
                 .size(15)
                 .padding(16)
                 .height(Fill)
+                .style(editor_style)
                 .into(),
             None => container(text("Select or create a note.").size(16))
                 .center(Fill)
                 .into(),
         };
 
-        let main = column![
-            container(editor).padding([8.0, 12.0]).height(Fill),
-            self.footer(),
-        ]
-        .spacing(0)
-        .width(Fill)
-        .height(Fill);
+        let page = container(editor)
+            .padding([8.0, 12.0])
+            .style(writing_surface)
+            .clip(true)
+            .width(Fill)
+            .height(Fill);
 
-        row![
+        let main = column![page, self.footer()]
+            .spacing(8)
+            .width(Fill)
+            .height(Fill);
+
+        let body = row![
             container(self.sidebar())
-                .style(sidebar_panel)
+                .style(panel)
+                .clip(true)
                 .width(SIDEBAR_WIDTH)
                 .height(Fill),
-            rule::vertical(1),
             main
         ]
-        .height(Fill)
-        .into()
+        .spacing(8)
+        .height(Fill);
+
+        container(body)
+            .padding(8)
+            .style(chassis)
+            .width(Fill)
+            .height(Fill)
+            .into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -285,17 +309,17 @@ impl App {
     // ── helpers ─────────────────────────────────────────────────
 
     /// Quiet writing context: the open note, save state, word count, cursor,
-    /// and a Live / Source switch. Errors replace the note name.
+    /// a Live / Source switch, and the light / dark theme switch.
     fn footer(&self) -> Element<'_, Message> {
-        let palette = THEME.extended_palette();
-        let ink = palette.background.base.text;
-        let muted = ink.scale_alpha(0.75);
+        let look = theme::tokens(self.appearance);
+        let ink = look.ink;
+        let muted = look.muted;
 
         let left: Element<'_, Message> = if let Some(err) = &self.notice {
             container(
                 text(err)
                     .size(12)
-                    .color(palette.danger.base.color)
+                    .color(look.danger)
                     .wrapping(text::Wrapping::None),
             )
             .width(Fill)
@@ -342,39 +366,55 @@ impl App {
             }
             right.push(self.mode_switch());
         }
+        right.push(self.theme_switch());
 
+        row![
+            container(left).width(Fill).clip(true),
+            row(right).spacing(16)
+        ]
+        .spacing(16)
+        .padding([2, 4])
+        .align_y(iced::Center)
+        .into()
+    }
+
+    fn theme_switch(&self) -> Element<'_, Message> {
         container(
-            column![
-                rule::horizontal(1),
-                row![
-                    container(left).width(Fill).clip(true),
-                    row(right).spacing(16)
-                ]
-                .spacing(16)
-                .padding([8, 14])
-                .align_y(iced::Center),
+            row![
+                segment(
+                    "Light",
+                    self.appearance == Appearance::Light,
+                    "Retro Classic — vintage beige and slate",
+                    Message::SetAppearance(Appearance::Light),
+                ),
+                segment(
+                    "Dark",
+                    self.appearance == Appearance::Dark,
+                    "Dolch Noir — charcoal and signal steel",
+                    Message::SetAppearance(Appearance::Dark),
+                ),
             ]
-            .width(Fill),
+            .spacing(2),
         )
-        .style(sidebar_panel)
-        .width(Fill)
+        .padding(2)
+        .style(segment_track)
         .into()
     }
 
     fn mode_switch(&self) -> Element<'_, Message> {
         container(
             row![
-                mode_segment(
+                segment(
                     "Live",
                     self.mode == Mode::Live,
                     "Rendered notes, except the line under the cursor (Ctrl+E)",
-                    Mode::Live,
+                    Message::SetMode(Mode::Live),
                 ),
-                mode_segment(
+                segment(
                     "Source",
                     self.mode == Mode::Source,
                     "Raw Markdown, for editing across lines (Ctrl+E)",
-                    Mode::Source,
+                    Message::SetMode(Mode::Source),
                 ),
             ]
             .spacing(2),
@@ -385,10 +425,10 @@ impl App {
     }
 
     fn sidebar(&self) -> Element<'_, Message> {
-        let palette = THEME.extended_palette();
-        let ink = palette.background.base.text;
-        let muted = ink.scale_alpha(0.75);
-        let label = ink.scale_alpha(0.75);
+        let look = theme::tokens(self.appearance);
+        let ink = look.ink;
+        let muted = look.muted;
+        let label = look.muted;
 
         let body: Element<'_, Message> = if let Some(ws) = &self.workspace {
             let name = ws
@@ -594,7 +634,7 @@ impl App {
                 parts.push(
                     text("●")
                         .size(8)
-                        .color(THEME.extended_palette().warning.base.color)
+                        .color(theme::tokens(self.appearance).warning)
                         .into(),
                 );
             }
@@ -813,7 +853,7 @@ fn icon_button<'a>(
             .on_press_maybe(on_press),
         container(text(tip).size(12))
             .padding([4, 8])
-            .style(container::rounded_box),
+            .style(hint_box),
         tooltip::Position::Bottom,
     )
     .gap(6)
@@ -824,21 +864,25 @@ fn icon_button<'a>(
 fn hint<'a>(tip: &'a str) -> Element<'a, Message> {
     container(text(tip).size(12))
         .padding([4, 8])
-        .style(container::rounded_box)
+        .style(hint_box)
         .into()
 }
 
-fn mode_segment<'a>(
+fn segment<'a>(
     label: &'a str,
     active: bool,
     tip: &'a str,
-    mode: Mode,
+    message: Message,
 ) -> Element<'a, Message> {
     tooltip(
-        button(text(label).size(12))
-            .padding([4, 10])
-            .style(segment_style(active))
-            .on_press(Message::SetMode(mode)),
+        button(
+            text(label)
+                .size(12)
+                .font(if active { LABEL } else { Font::DEFAULT }),
+        )
+        .padding([4, 10])
+        .style(segment_style(active))
+        .on_press(message),
         hint(tip),
         tooltip::Position::Top,
     )
@@ -848,34 +892,28 @@ fn mode_segment<'a>(
 }
 
 fn segment_track(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
+    let look = theme::tokens_of(theme);
     container::Style {
-        background: Some(palette.background.weak.color.into()),
-        border: border::rounded(8),
+        background: Some(look.track.into()),
+        border: border::rounded(6),
         ..container::Style::default()
     }
 }
 
 fn segment_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
-        let palette = theme.extended_palette();
+        let look = theme::tokens_of(theme);
         let background = if active {
-            Some(palette.primary.base.color.scale_alpha(0.2).into())
+            Some(look.raised.into())
         } else {
             match status {
-                button::Status::Hovered | button::Status::Pressed => {
-                    Some(palette.background.strong.color.into())
-                }
+                button::Status::Hovered | button::Status::Pressed => Some(look.surface.into()),
                 _ => None,
             }
         };
         button::Style {
             background,
-            text_color: if active {
-                palette.background.base.text
-            } else {
-                palette.background.base.text.scale_alpha(0.7)
-            },
+            text_color: if active { look.ink } else { look.muted },
             border: border::rounded(6),
             ..button::Style::default()
         }
@@ -883,14 +921,14 @@ fn segment_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::Sty
 }
 
 fn unsaved_style(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
+    let look = theme::tokens_of(theme);
     let mut style = button::Style {
-        text_color: palette.warning.base.color,
+        text_color: look.warning,
         border: border::rounded(6),
         ..button::Style::default()
     };
     if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        style.background = Some(palette.warning.base.color.scale_alpha(0.16).into());
+        style.background = Some(look.warning.scale_alpha(0.16).into());
     }
     style
 }
@@ -923,57 +961,186 @@ fn tree_button<'a>(
         .into()
 }
 
-fn sidebar_panel(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
+fn chassis(theme: &Theme) -> container::Style {
+    let look = theme::tokens_of(theme);
     container::Style {
-        background: Some(palette.background.weakest.color.into()),
-        text_color: Some(palette.background.base.text),
+        background: Some(look.canvas.into()),
+        text_color: Some(look.ink),
         ..container::Style::default()
     }
 }
 
+fn panel(theme: &Theme) -> container::Style {
+    let look = theme::tokens_of(theme);
+    container::Style {
+        background: Some(look.panel.into()),
+        text_color: Some(look.ink),
+        border: Border {
+            color: look.border,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        shadow: card_shadow(look.dark),
+        ..container::Style::default()
+    }
+}
+
+fn writing_surface(theme: &Theme) -> container::Style {
+    let look = theme::tokens_of(theme);
+    container::Style {
+        background: Some(look.surface.into()),
+        text_color: Some(look.ink),
+        border: Border {
+            color: look.border,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        shadow: card_shadow(look.dark),
+        ..container::Style::default()
+    }
+}
+
+fn card_shadow(dark: bool) -> Shadow {
+    if dark {
+        Shadow {
+            color: Color::BLACK.scale_alpha(0.5),
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 12.0,
+        }
+    } else {
+        Shadow {
+            color: Color::BLACK.scale_alpha(0.04),
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 4.0,
+        }
+    }
+}
+
+fn hint_box(theme: &Theme) -> container::Style {
+    let look = theme::tokens_of(theme);
+    container::Style {
+        background: Some(look.raised.into()),
+        text_color: Some(look.ink),
+        border: Border {
+            color: look.border,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+fn editor_style(theme: &Theme, _status: text_editor::Status) -> text_editor::Style {
+    let look = theme::tokens_of(theme);
+    text_editor::Style {
+        background: look.surface.into(),
+        border: Border::default(),
+        placeholder: look.muted,
+        value: look.ink,
+        selection: look.selection,
+    }
+}
+
 fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let mut style = text_input::default(theme, status);
-    style.border.radius = 8.0.into();
-    style
+    let look = theme::tokens_of(theme);
+    let border_color = match status {
+        text_input::Status::Focused { .. } => look.focus,
+        text_input::Status::Hovered => look.border_strong,
+        _ => look.border,
+    };
+    text_input::Style {
+        background: look.surface.into(),
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        icon: look.muted,
+        placeholder: look.muted,
+        value: look.ink,
+        selection: look.selection,
+    }
 }
 
 fn rounded_primary(theme: &Theme, status: button::Status) -> button::Style {
-    let mut style = button::primary(theme, status);
-    style.border = style.border.rounded(8);
-    style
+    let look = theme::tokens_of(theme);
+    keycap(
+        look.accent,
+        look.accent_hover,
+        look.accent_text,
+        look.accent_edge,
+        look.accent,
+        status,
+    )
 }
 
 fn rounded_subtle(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
+    let look = theme::tokens_of(theme);
+    keycap(
+        look.surface,
+        look.raised,
+        look.ink,
+        look.lip,
+        look.border,
+        status,
+    )
+}
+
+/// Alpha or accent key: fill, a 2px lip, and no lip once the key is down.
+fn keycap(
+    rest: Color,
+    hover: Color,
+    text: Color,
+    lip: Color,
+    edge: Color,
+    status: button::Status,
+) -> button::Style {
+    let pressed = status == button::Status::Pressed;
+    let disabled = status == button::Status::Disabled;
+    let fill = if status == button::Status::Hovered {
+        hover
+    } else {
+        rest
+    };
     let mut style = button::Style {
-        text_color: palette.background.base.text,
-        background: Some(palette.background.weaker.color.into()),
-        border: border::rounded(8),
+        background: Some(fill.into()),
+        text_color: text,
+        border: Border {
+            color: edge,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        shadow: if pressed || disabled {
+            Shadow::default()
+        } else {
+            Shadow {
+                color: lip,
+                offset: Vector::new(0.0, 2.0),
+                blur_radius: 0.0,
+            }
+        },
         ..button::Style::default()
     };
-    if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        style.background = Some(palette.background.strong.color.into());
-    }
-    if status == button::Status::Disabled {
-        style.text_color = style.text_color.scale_alpha(0.4);
+    if disabled {
+        style.text_color = style.text_color.scale_alpha(0.45);
+        style.background = style.background.map(|bg| bg.scale_alpha(0.5));
     }
     style
 }
 
 fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
+    let look = theme::tokens_of(theme);
     let mut style = button::Style {
-        text_color: palette.background.base.text,
-        border: border::rounded(8),
+        text_color: look.ink,
+        border: border::rounded(6),
         ..button::Style::default()
     };
     match status {
         button::Status::Hovered => {
-            style.background = Some(palette.background.weak.color.into());
+            style.background = Some(look.raised.into());
         }
         button::Status::Pressed => {
-            style.background = Some(palette.background.strong.color.into());
+            style.background = Some(look.surface.into());
         }
         button::Status::Disabled => {
             style.text_color = style.text_color.scale_alpha(0.35);
@@ -985,23 +1152,23 @@ fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
 
 fn tree_row_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
-        let palette = theme.extended_palette();
+        let look = theme::tokens_of(theme);
         let background = if selected {
             let alpha = match status {
                 button::Status::Hovered | button::Status::Pressed => 0.28,
                 _ => 0.16,
             };
-            Some(palette.primary.base.color.scale_alpha(alpha).into())
+            Some(look.accent.scale_alpha(alpha).into())
         } else {
             match status {
-                button::Status::Hovered => Some(palette.background.weak.color.into()),
-                button::Status::Pressed => Some(palette.background.strong.color.into()),
+                button::Status::Hovered => Some(look.raised.into()),
+                button::Status::Pressed => Some(look.surface.into()),
                 _ => None,
             }
         };
         button::Style {
             background,
-            text_color: palette.background.base.text,
+            text_color: look.ink,
             border: border::rounded(6),
             ..button::Style::default()
         }
@@ -1052,11 +1219,15 @@ fn open_external(url: &str) -> std::io::Result<()> {
         .map(drop)
 }
 
-fn config_file() -> Option<PathBuf> {
+fn config_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("zarinotes").join("last_workspace"))
+    Some(base.join("zarinotes"))
+}
+
+fn config_file() -> Option<PathBuf> {
+    Some(config_dir()?.join("last_workspace"))
 }
 
 fn load_last_workspace() -> Option<PathBuf> {
@@ -1068,6 +1239,23 @@ fn save_last_workspace(dir: &Path) {
     if let Some(file) = config_file() {
         let _ = file.parent().map(std::fs::create_dir_all);
         let _ = std::fs::write(file, dir.to_string_lossy().as_bytes());
+    }
+}
+
+fn load_appearance() -> Appearance {
+    let Some(path) = config_dir().map(|d| d.join("theme")) else {
+        return Appearance::Dark;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Appearance::Dark;
+    };
+    Appearance::parse(text.trim()).unwrap_or(Appearance::Dark)
+}
+
+fn save_appearance(appearance: Appearance) {
+    if let Some(dir) = config_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("theme"), appearance.as_str());
     }
 }
 

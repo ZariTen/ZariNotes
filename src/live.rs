@@ -201,6 +201,11 @@ impl Live {
         let mut settings = markdown::Settings::with_text_size(TEXT_SIZE, theme);
         settings.code_size = (TEXT_SIZE * 0.875).into();
         settings.spacing = (TEXT_SIZE * 0.5).into();
+        let look = crate::theme::tokens_of(theme);
+        settings.style.link_color = look.link;
+        settings.style.inline_code_color = look.accent_text;
+        settings.style.inline_code_highlight.background = look.accent.into();
+        settings.style.inline_code_highlight.border.radius = 4.0.into();
 
         let blocks = self.segments.iter().enumerate().map(|(i, seg)| {
             if i == self.active {
