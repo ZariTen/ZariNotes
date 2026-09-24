@@ -1,27 +1,33 @@
 //! ZariNotes — a minimal Markdown notes app.
 //!
-//! Pick a workspace folder, browse its `.md` files, and edit them as plain text.
+//! Pick a workspace folder, browse its `.md` files, and edit them with an
+//! live preview (or as plain source).
 
+mod highlight;
 mod icons;
+mod live;
 mod tree;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use iced::keyboard::{self, Key};
-use iced::widget::text_editor::{Binding, KeyPress};
+use iced::widget::text_editor::{Binding, Cursor, KeyPress, Position};
 use iced::widget::{
     button, column, container, row, rule, scrollable, space, text, text_editor, text_input,
 };
 use iced::{Element, Fill, Font, Padding, Subscription, Task, Theme};
 
+use live::Live;
 use tree::Dir;
+
+const THEME: Theme = Theme::TokyoNight;
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
         .title(App::title)
         .subscription(App::subscription)
-        .theme(|_: &App| Theme::TokyoNight)
+        .theme(|_: &App| THEME)
         .window_size((1100.0, 720.0))
         .run()
 }
@@ -34,10 +40,24 @@ struct App {
     expanded: HashSet<PathBuf>,
     /// Currently open file, relative to the workspace root.
     current: Option<PathBuf>,
-    content: text_editor::Content,
+    /// The open note's editor, if any.
+    doc: Option<Doc>,
+    /// Preferred editing mode, kept across notes.
+    mode: Mode,
     dirty: bool,
     new_name: String,
     status: String,
+}
+
+enum Doc {
+    Live(Live),
+    Source(text_editor::Content),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Mode {
+    Live,
+    Source,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +69,8 @@ enum Message {
     ToggleDir(PathBuf),
     Open(PathBuf),
     Edit(text_editor::Action),
+    Live(live::Msg),
+    ToggleMode,
     Save,
     NewNameChanged(String),
     CreateNote,
@@ -61,7 +83,8 @@ impl App {
             tree: Dir::default(),
             expanded: HashSet::new(),
             current: None,
-            content: text_editor::Content::new(),
+            doc: None,
+            mode: Mode::Live,
             dirty: false,
             new_name: String::new(),
             status: "Open a workspace folder to begin.".into(),
@@ -102,7 +125,7 @@ impl App {
             Message::WorkspacePicked(Some(dir)) => {
                 self.save_if_dirty();
                 self.current = None;
-                self.content = text_editor::Content::new();
+                self.doc = None;
                 self.dirty = false;
                 self.tree = Dir::default();
                 self.expanded.clear();
@@ -132,23 +155,46 @@ impl App {
                 };
                 match std::fs::read_to_string(ws.join(&rel)) {
                     Ok(body) => {
-                        self.content = text_editor::Content::with_text(&body);
                         self.status = format!("Opened {}", rel.display());
                         self.expand_ancestors(&rel);
                         self.current = Some(rel);
                         self.dirty = false;
+                        self.load(&body, Position { line: 0, column: 0 })
                     }
-                    Err(e) => self.status = format!("Failed to open {}: {e}", rel.display()),
+                    Err(e) => {
+                        self.status = format!("Failed to open {}: {e}", rel.display());
+                        Task::none()
+                    }
                 }
-                Task::none()
             }
             Message::Edit(action) => {
-                if self.current.is_some() {
+                if let Some(Doc::Source(content)) = &mut self.doc {
                     self.dirty |= action.is_edit();
-                    self.content.perform(action);
+                    content.perform(action);
                 }
                 Task::none()
             }
+            Message::Live(msg) => {
+                let Some(Doc::Live(live)) = &mut self.doc else {
+                    return Task::none();
+                };
+                let (task, outcome) = live.update(msg);
+                let task = task.map(Message::Live);
+                match outcome {
+                    live::Outcome::None => task,
+                    live::Outcome::Changed => {
+                        self.dirty = true;
+                        task
+                    }
+                    live::Outcome::Save => {
+                        self.save();
+                        task
+                    }
+                    live::Outcome::ToggleMode => self.toggle_mode(),
+                    live::Outcome::Link(url) => Task::batch([task, self.open_link(&url)]),
+                }
+            }
+            Message::ToggleMode => self.toggle_mode(),
             Message::Save => {
                 self.save();
                 Task::none()
@@ -200,32 +246,44 @@ impl App {
         .width(260);
 
         // ── Editor ──────────────────────────────────────────────
-        let editor: Element<'_, Message> = if self.current.is_some() {
-            text_editor(&self.content)
+        let editor: Element<'_, Message> = match &self.doc {
+            Some(Doc::Live(live)) => live.view(&THEME).map(Message::Live),
+            Some(Doc::Source(content)) => text_editor(content)
+                .id(SOURCE_EDITOR_ID)
                 .placeholder("Start writing Markdown…")
                 .on_action(Message::Edit)
+                .highlight_with::<highlight::Highlighter>(
+                    highlight::Settings { mono: true },
+                    highlight::to_format,
+                )
                 .key_binding(editor_bindings)
                 .font(Font::MONOSPACE)
                 .size(15)
                 .padding(16)
                 .height(Fill)
-                .into()
-        } else {
-            container(text("Select or create a note.").size(16))
+                .into(),
+            None => container(text("Select or create a note.").size(16))
                 .center(Fill)
-                .into()
+                .into(),
         };
 
         let status_bar = row![
             text(&self.status).size(13),
             space::horizontal(),
-            text(if self.current.is_some() {
-                let c = self.content.cursor().position;
-                format!("Ln {}, Col {}", c.line + 1, c.column + 1)
-            } else {
-                String::new()
+            text(match self.cursor() {
+                Some(c) => format!("Ln {}, Col {}", c.line + 1, c.column + 1),
+                None => String::new(),
             })
             .size(13),
+            button(
+                text(match self.mode {
+                    Mode::Live => "Live preview",
+                    Mode::Source => "Source",
+                })
+                .size(13)
+            )
+            .style(button::secondary)
+            .on_press_maybe(self.doc.is_some().then_some(Message::ToggleMode)),
             button(text("Save").size(13))
                 .on_press_maybe((self.dirty && self.current.is_some()).then_some(Message::Save)),
         ]
@@ -244,12 +302,14 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        // Ctrl+S when the editor isn't focused (the editor handles its own binding).
+        // Shortcuts when no editor is focused (the editors handle their own bindings).
         keyboard::listen().filter_map(|event| match event {
-            keyboard::Event::KeyPressed { key, modifiers, .. }
-                if modifiers.command() && key == Key::Character("s".into()) =>
-            {
-                Some(Message::Save)
+            keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => {
+                match key.as_ref() {
+                    Key::Character("s") => Some(Message::Save),
+                    Key::Character("e") => Some(Message::ToggleMode),
+                    _ => None,
+                }
             }
             _ => None,
         })
@@ -341,11 +401,94 @@ impl App {
         }
     }
 
+    /// Load `text` into an editor for the current mode.
+    fn load(&mut self, text: &str, cursor: Position) -> Task<Message> {
+        match self.mode {
+            Mode::Live => {
+                let (live, task) = Live::new(text, cursor);
+                self.doc = Some(Doc::Live(live));
+                task.map(Message::Live)
+            }
+            Mode::Source => {
+                let mut content = text_editor::Content::with_text(text);
+                content.move_to(Cursor {
+                    position: cursor,
+                    selection: None,
+                });
+                self.doc = Some(Doc::Source(content));
+                iced::widget::operation::focus(SOURCE_EDITOR_ID)
+            }
+        }
+    }
+
+    fn text(&self) -> Option<String> {
+        match self.doc.as_ref()? {
+            Doc::Live(live) => Some(live.text()),
+            Doc::Source(content) => Some(content.text()),
+        }
+    }
+
+    fn cursor(&self) -> Option<Position> {
+        match self.doc.as_ref()? {
+            Doc::Live(live) => Some(live.cursor()),
+            Doc::Source(content) => Some(content.cursor().position),
+        }
+    }
+
+    fn toggle_mode(&mut self) -> Task<Message> {
+        self.mode = match self.mode {
+            Mode::Live => Mode::Source,
+            Mode::Source => Mode::Live,
+        };
+        match (self.text(), self.cursor()) {
+            (Some(text), Some(cursor)) => self.load(&text, cursor),
+            _ => Task::none(),
+        }
+    }
+
+    /// Follow a link clicked in the preview: other notes open in the app,
+    /// everything else goes to the system handler.
+    fn open_link(&mut self, url: &str) -> Task<Message> {
+        if url.contains("://") || url.starts_with("mailto:") {
+            if let Err(e) = open_external(url) {
+                self.status = format!("Could not open {url}: {e}");
+            }
+            return Task::none();
+        }
+
+        let target = url
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .replace("%20", " ");
+        if target.is_empty() {
+            return Task::none();
+        }
+        let base = self
+            .current
+            .as_ref()
+            .and_then(|c| c.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let mut rel = normalize(&base.join(&target));
+        if rel.extension().is_none() {
+            rel.set_extension("md");
+        }
+        match &self.workspace {
+            Some(ws) if ws.join(&rel).is_file() => Task::done(Message::Open(rel)),
+            _ => {
+                self.status = format!("Note not found: {}", rel.display());
+                Task::none()
+            }
+        }
+    }
+
     fn save(&mut self) {
-        let (Some(ws), Some(rel)) = (&self.workspace, &self.current) else {
+        let (Some(ws), Some(rel), Some(text)) = (&self.workspace, &self.current, self.text())
+        else {
             return;
         };
-        match std::fs::write(ws.join(rel), self.content.text()) {
+        match std::fs::write(ws.join(rel), text) {
             Ok(()) => {
                 self.dirty = false;
                 self.status = format!("Saved {}", rel.display());
@@ -399,15 +542,50 @@ impl App {
     }
 }
 
-/// Ctrl+S saves from inside the editor; Tab inserts spaces; everything else is default.
+const SOURCE_EDITOR_ID: &str = "source-editor";
+
+/// Ctrl+S saves, Ctrl+E toggles live preview, Tab inserts spaces.
 fn editor_bindings(kp: KeyPress) -> Option<Binding<Message>> {
-    if kp.modifiers.command() && kp.key == Key::Character("s".into()) {
-        return Some(Binding::Custom(Message::Save));
+    if kp.modifiers.command() {
+        match kp.key.as_ref() {
+            Key::Character("s") => return Some(Binding::Custom(Message::Save)),
+            Key::Character("e") => return Some(Binding::Custom(Message::ToggleMode)),
+            _ => {}
+        }
     }
     if matches!(kp.key, Key::Named(keyboard::key::Named::Tab)) && kp.modifiers.is_empty() {
         return Some(Binding::Sequence(vec![Binding::Insert(' '); 4]));
     }
     Binding::from_key_press(kp)
+}
+
+/// Resolve `.` and `..` components without touching the filesystem.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::Normal(p) => out.push(p),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn open_external(url: &str) -> std::io::Result<()> {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(url)
+        .spawn()
+        .map(drop)
 }
 
 fn config_file() -> Option<PathBuf> {
