@@ -11,12 +11,13 @@ mod tree;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use iced::font::Weight;
 use iced::keyboard::{self, Key};
 use iced::widget::text_editor::{Binding, Cursor, KeyPress, Position};
 use iced::widget::{
-    button, column, container, row, rule, scrollable, space, text, text_editor, text_input,
+    button, column, container, row, rule, scrollable, space, text, text_editor, text_input, tooltip,
 };
-use iced::{Element, Fill, Font, Padding, Subscription, Task, Theme};
+use iced::{Element, Fill, Font, Padding, Subscription, Task, Theme, border};
 
 use live::Live;
 use tree::Dir;
@@ -46,7 +47,10 @@ struct App {
     mode: Mode,
     dirty: bool,
     new_name: String,
-    status: String,
+    /// Sidebar filter. Empty shows the full tree.
+    filter: String,
+    /// Problem worth showing in the footer. Routine success is not stored.
+    notice: Option<String>,
 }
 
 enum Doc {
@@ -71,8 +75,10 @@ enum Message {
     Edit(text_editor::Action),
     Live(live::Msg),
     ToggleMode,
+    SetMode(Mode),
     Save,
     NewNameChanged(String),
+    FilterChanged(String),
     CreateNote,
 }
 
@@ -87,7 +93,8 @@ impl App {
             mode: Mode::Live,
             dirty: false,
             new_name: String::new(),
-            status: "Open a workspace folder to begin.".into(),
+            filter: String::new(),
+            notice: None,
         };
 
         // Reopen the last workspace, if it still exists.
@@ -129,7 +136,8 @@ impl App {
                 self.dirty = false;
                 self.tree = Dir::default();
                 self.expanded.clear();
-                self.status = format!("Workspace: {}", dir.display());
+                self.filter.clear();
+                self.notice = None;
                 save_last_workspace(&dir);
                 self.workspace = Some(dir);
                 self.scan()
@@ -155,14 +163,14 @@ impl App {
                 };
                 match std::fs::read_to_string(ws.join(&rel)) {
                     Ok(body) => {
-                        self.status = format!("Opened {}", rel.display());
+                        self.notice = None;
                         self.expand_ancestors(&rel);
                         self.current = Some(rel);
                         self.dirty = false;
                         self.load(&body, Position { line: 0, column: 0 })
                     }
                     Err(e) => {
-                        self.status = format!("Failed to open {}: {e}", rel.display());
+                        self.notice = Some(format!("Failed to open {}: {e}", rel.display()));
                         Task::none()
                     }
                 }
@@ -195,6 +203,12 @@ impl App {
                 }
             }
             Message::ToggleMode => self.toggle_mode(),
+            Message::SetMode(mode) => {
+                if self.mode == mode || self.doc.is_none() {
+                    return Task::none();
+                }
+                self.toggle_mode()
+            }
             Message::Save => {
                 self.save();
                 Task::none()
@@ -203,48 +217,15 @@ impl App {
                 self.new_name = name;
                 Task::none()
             }
+            Message::FilterChanged(filter) => {
+                self.filter = filter;
+                Task::none()
+            }
             Message::CreateNote => self.create_note(),
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        // ── Sidebar ──────────────────────────────────────────────
-        let ws_label = self
-            .workspace
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "No workspace".into());
-
-        let mut rows = Vec::new();
-        self.tree_rows(&self.tree, Path::new(""), 0, &mut rows);
-        if rows.is_empty() && self.workspace.is_some() {
-            rows.push(text("No notes yet.").size(13).into());
-        }
-        let file_list = column(rows).spacing(1);
-
-        let new_note = text_input("new-note.md", &self.new_name)
-            .on_input_maybe(self.workspace.is_some().then_some(Message::NewNameChanged))
-            .on_submit(Message::CreateNote)
-            .size(14);
-
-        let sidebar = column![
-            row![
-                button("Open…").on_press(Message::PickWorkspace),
-                button("⟳")
-                    .style(button::secondary)
-                    .on_press_maybe(self.workspace.is_some().then_some(Message::Refresh)),
-            ]
-            .spacing(6),
-            text(ws_label).size(16),
-            new_note,
-            rule::horizontal(1),
-            scrollable(file_list).height(Fill),
-        ]
-        .spacing(10)
-        .padding(10)
-        .width(260);
-
         // ── Editor ──────────────────────────────────────────────
         let editor: Element<'_, Message> = match &self.doc {
             Some(Doc::Live(live)) => live.view(&THEME).map(Message::Live),
@@ -267,37 +248,23 @@ impl App {
                 .into(),
         };
 
-        let status_bar = row![
-            text(&self.status).size(13),
-            space::horizontal(),
-            text(match self.cursor() {
-                Some(c) => format!("Ln {}, Col {}", c.line + 1, c.column + 1),
-                None => String::new(),
-            })
-            .size(13),
-            button(
-                text(match self.mode {
-                    Mode::Live => "Live preview",
-                    Mode::Source => "Source",
-                })
-                .size(13)
-            )
-            .style(button::secondary)
-            .on_press_maybe(self.doc.is_some().then_some(Message::ToggleMode)),
-            button(text("Save").size(13))
-                .on_press_maybe((self.dirty && self.current.is_some()).then_some(Message::Save)),
+        let main = column![
+            container(editor).padding([8.0, 12.0]).height(Fill),
+            self.footer(),
         ]
-        .spacing(12)
-        .align_y(iced::Center);
-
-        let main = column![editor, status_bar].spacing(8).padding(10);
+        .spacing(0)
+        .width(Fill)
+        .height(Fill);
 
         row![
-            container(sidebar)
-                .style(container::rounded_box)
+            container(self.sidebar())
+                .style(sidebar_panel)
+                .width(SIDEBAR_WIDTH)
                 .height(Fill),
+            rule::vertical(1),
             main
         ]
+        .height(Fill)
         .into()
     }
 
@@ -317,6 +284,246 @@ impl App {
 
     // ── helpers ─────────────────────────────────────────────────
 
+    /// Quiet writing context: the open note, save state, word count, cursor,
+    /// and a Live / Source switch. Errors replace the note name.
+    fn footer(&self) -> Element<'_, Message> {
+        let palette = THEME.extended_palette();
+        let ink = palette.background.base.text;
+        let muted = ink.scale_alpha(0.75);
+
+        let left: Element<'_, Message> = if let Some(err) = &self.notice {
+            container(
+                text(err)
+                    .size(12)
+                    .color(palette.danger.base.color)
+                    .wrapping(text::Wrapping::None),
+            )
+            .width(Fill)
+            .clip(true)
+            .into()
+        } else if let Some(rel) = &self.current {
+            let state: Element<'_, Message> = if self.dirty {
+                tooltip(
+                    button(text("Unsaved").size(12))
+                        .padding([2, 8])
+                        .style(unsaved_style)
+                        .on_press(Message::Save),
+                    hint("Save (Ctrl+S)"),
+                    tooltip::Position::Top,
+                )
+                .gap(6)
+                .delay(iced::time::Duration::from_millis(350))
+                .into()
+            } else {
+                text("Saved").size(12).color(muted).into()
+            };
+            row![
+                state,
+                line(rel.display().to_string(), 12.0, Font::DEFAULT, ink),
+            ]
+            .spacing(8)
+            .align_y(iced::Center)
+            .into()
+        } else {
+            text("No note open").size(12).color(muted).into()
+        };
+
+        let mut right: Vec<Element<'_, Message>> = Vec::new();
+        if self.doc.is_some() {
+            let words = self.text().as_deref().map(word_count).unwrap_or(0);
+            right.push(text(words_label(words)).size(12).color(muted).into());
+            if let Some(cursor) = self.cursor() {
+                right.push(
+                    text(format!("Ln {}, Col {}", cursor.line + 1, cursor.column + 1))
+                        .size(12)
+                        .color(muted)
+                        .into(),
+                );
+            }
+            right.push(self.mode_switch());
+        }
+
+        container(
+            column![
+                rule::horizontal(1),
+                row![
+                    container(left).width(Fill).clip(true),
+                    row(right).spacing(16)
+                ]
+                .spacing(16)
+                .padding([8, 14])
+                .align_y(iced::Center),
+            ]
+            .width(Fill),
+        )
+        .style(sidebar_panel)
+        .width(Fill)
+        .into()
+    }
+
+    fn mode_switch(&self) -> Element<'_, Message> {
+        container(
+            row![
+                mode_segment(
+                    "Live",
+                    self.mode == Mode::Live,
+                    "Rendered notes, except the line under the cursor (Ctrl+E)",
+                    Mode::Live,
+                ),
+                mode_segment(
+                    "Source",
+                    self.mode == Mode::Source,
+                    "Raw Markdown, for editing across lines (Ctrl+E)",
+                    Mode::Source,
+                ),
+            ]
+            .spacing(2),
+        )
+        .padding(2)
+        .style(segment_track)
+        .into()
+    }
+
+    fn sidebar(&self) -> Element<'_, Message> {
+        let palette = THEME.extended_palette();
+        let ink = palette.background.base.text;
+        let muted = ink.scale_alpha(0.75);
+        let label = ink.scale_alpha(0.75);
+
+        let body: Element<'_, Message> = if let Some(ws) = &self.workspace {
+            let name = ws
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ws.display().to_string());
+            let mut title = column![
+                text("Workspace").size(12).font(LABEL).color(label),
+                line(name, 15.0, MEDIUM, ink),
+            ]
+            .spacing(2)
+            .width(Fill);
+            if let Some(parent) = ws.parent().and_then(|p| p.file_name()) {
+                title = title.push(line(
+                    format!("in {}", parent.to_string_lossy()),
+                    12.0,
+                    Font::DEFAULT,
+                    muted,
+                ));
+            }
+
+            let filtering = !self.filter.trim().is_empty();
+            let filter_input = text_input("Find a note…", &self.filter)
+                .on_input(Message::FilterChanged)
+                .padding([8, 10])
+                .size(14)
+                .width(Fill)
+                .style(field_style);
+            let filter_row: Element<'_, Message> = if filtering {
+                row![
+                    filter_input,
+                    button(text("Clear").size(13))
+                        .padding([8, 10])
+                        .style(rounded_subtle)
+                        .on_press(Message::FilterChanged(String::new())),
+                ]
+                .spacing(6)
+                .align_y(iced::Center)
+                .into()
+            } else {
+                filter_input.into()
+            };
+
+            let can_add = !self.new_name.trim().is_empty();
+            let total = self.tree.file_count();
+            let shown = self.tree.visible_file_count(&self.filter);
+            let count = if filtering {
+                format!("{shown} of {total}")
+            } else {
+                match total {
+                    0 => "None yet".into(),
+                    1 => "1 note".into(),
+                    n => format!("{n} notes"),
+                }
+            };
+
+            let mut rows = Vec::new();
+            self.tree_rows(&self.tree, Path::new(""), 0, &self.filter, false, &mut rows);
+            if rows.is_empty() {
+                let message = if filtering {
+                    format!("No notes match \"{}\".", self.filter.trim())
+                } else {
+                    "No notes yet. Type a name above and press Add.".into()
+                };
+                rows.push(
+                    container(text(message).size(13).color(muted))
+                        .padding([8, 4])
+                        .into(),
+                );
+            }
+
+            column![
+                row![
+                    title,
+                    icon_button(
+                        icons::open_folder(),
+                        "Open folder",
+                        Some(Message::PickWorkspace)
+                    ),
+                    icon_button(icons::refresh(), "Refresh", Some(Message::Refresh)),
+                ]
+                .spacing(6)
+                .align_y(iced::Center),
+                column![text("Filter").size(12).font(LABEL).color(label), filter_row,].spacing(4),
+                column![
+                    text("New note").size(12).font(LABEL).color(label),
+                    row![
+                        text_input("Name or folder/name", &self.new_name)
+                            .on_input(Message::NewNameChanged)
+                            .on_submit(Message::CreateNote)
+                            .padding([8, 10])
+                            .size(14)
+                            .width(Fill)
+                            .style(field_style),
+                        button(text("Add").size(13))
+                            .padding([8, 12])
+                            .style(rounded_primary)
+                            .on_press_maybe(can_add.then_some(Message::CreateNote)),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Center),
+                ]
+                .spacing(4),
+                rule::horizontal(1),
+                row![
+                    text("Notes").size(12).font(LABEL).color(label),
+                    space::horizontal(),
+                    text(count).size(12).color(muted),
+                ]
+                .align_y(iced::Center),
+                scrollable(column(rows).spacing(2)).height(Fill),
+            ]
+            .spacing(14)
+            .into()
+        } else {
+            column![
+                text("Notes").size(18).font(MEDIUM),
+                text("No folder open").size(14).color(muted),
+                text("Open a folder to list its Markdown notes.")
+                    .size(13)
+                    .color(muted)
+                    .width(Fill),
+                button(text("Open folder").size(14))
+                    .width(Fill)
+                    .padding([10, 12])
+                    .style(rounded_primary)
+                    .on_press(Message::PickWorkspace),
+            ]
+            .spacing(10)
+            .into()
+        };
+
+        container(body).padding(14).width(Fill).height(Fill).into()
+    }
+
     fn scan(&self) -> Task<Message> {
         match self.workspace.clone() {
             Some(ws) => Task::perform(async move { Dir::scan(&ws) }, Message::FilesScanned),
@@ -325,71 +532,78 @@ impl App {
     }
 
     /// Flatten the visible part of `dir` into indented sidebar rows.
+    ///
+    /// An empty `query` follows the expanded-folder set. A query shows only
+    /// matching branches, and a folder whose own name matches reveals all of
+    /// its children.
     fn tree_rows<'a>(
         &'a self,
         dir: &'a Dir,
         prefix: &Path,
         depth: u16,
+        query: &str,
+        reveal_all: bool,
         rows: &mut Vec<Element<'a, Message>>,
     ) {
-        const INDENT: f32 = 14.0;
-        let pad = Padding::from([3, 6]).left(6.0 + f32::from(depth) * INDENT);
+        const INDENT: f32 = 16.0;
+        let pad = Padding::from([6, 8]).left(8.0 + f32::from(depth) * INDENT);
+        let filtering = !query.trim().is_empty() && !reveal_all;
 
         for (name, sub) in &dir.dirs {
             let path = prefix.join(name);
-            let open = self.expanded.contains(&path);
-            let arrow = if sub.is_empty() {
-                " "
-            } else if open {
-                "▾"
+            let name_match = Dir::name_hit(name, query);
+            if filtering && !name_match && !sub.contains_match(query) {
+                continue;
+            }
+            let open = if query.trim().is_empty() {
+                self.expanded.contains(&path)
             } else {
-                "▸"
+                !sub.is_empty()
             };
-            rows.push(
-                button(
-                    row![
-                        text(arrow).size(13).width(12),
-                        icons::folder(open),
-                        text(name.as_str()).size(14)
-                    ]
-                    .spacing(6)
+            let chevron: Element<'a, Message> = if sub.is_empty() {
+                space().width(14).into()
+            } else {
+                icons::chevron(open).into()
+            };
+            rows.push(tree_button(
+                row![chevron, icons::folder(open), row_label(name, MEDIUM)]
+                    .spacing(8)
                     .align_y(iced::Center),
-                )
-                .width(Fill)
-                .padding(pad)
-                .style(button::text)
-                .on_press(Message::ToggleDir(path.clone()))
-                .into(),
-            );
+                pad,
+                false,
+                Message::ToggleDir(path.clone()),
+            ));
             if open {
-                self.tree_rows(sub, &path, depth + 1, rows);
+                self.tree_rows(sub, &path, depth + 1, query, reveal_all || name_match, rows);
             }
         }
 
         for name in &dir.files {
+            if filtering && !Dir::file_hit(name, query) {
+                continue;
+            }
             let path = prefix.join(name);
             let selected = self.current.as_ref() == Some(&path);
             let label = name.strip_suffix(".md").unwrap_or(name);
-            rows.push(
-                button(
-                    row![
-                        space().width(12),
-                        icons::file(selected),
-                        text(label).size(14)
-                    ]
-                    .spacing(6)
-                    .align_y(iced::Center),
-                )
-                .width(Fill)
-                .padding(pad)
-                .style(if selected {
-                    button::primary
-                } else {
-                    button::text
-                })
-                .on_press(Message::Open(path))
-                .into(),
-            );
+            let mut parts = vec![
+                space().width(14).into(),
+                icons::file(selected).into(),
+                row_label(label, if selected { MEDIUM } else { Font::DEFAULT }),
+            ];
+            if selected && self.dirty {
+                parts.push(
+                    text("●")
+                        .size(8)
+                        .color(THEME.extended_palette().warning.base.color)
+                        .into(),
+                );
+            }
+            rows.push(tree_button(
+                row(parts).spacing(8).align_y(iced::Center),
+                pad,
+                selected,
+                Message::Open(path),
+            ));
         }
     }
 
@@ -451,7 +665,9 @@ impl App {
     fn open_link(&mut self, url: &str) -> Task<Message> {
         if url.contains("://") || url.starts_with("mailto:") {
             if let Err(e) = open_external(url) {
-                self.status = format!("Could not open {url}: {e}");
+                self.notice = Some(format!("Could not open {url}: {e}"));
+            } else {
+                self.notice = None;
             }
             return Task::none();
         }
@@ -477,7 +693,7 @@ impl App {
         match &self.workspace {
             Some(ws) if ws.join(&rel).is_file() => Task::done(Message::Open(rel)),
             _ => {
-                self.status = format!("Note not found: {}", rel.display());
+                self.notice = Some(format!("Note not found: {}", rel.display()));
                 Task::none()
             }
         }
@@ -491,9 +707,9 @@ impl App {
         match std::fs::write(ws.join(rel), text) {
             Ok(()) => {
                 self.dirty = false;
-                self.status = format!("Saved {}", rel.display());
+                self.notice = None;
             }
-            Err(e) => self.status = format!("Save failed: {e}"),
+            Err(e) => self.notice = Some(format!("Save failed: {e}")),
         }
     }
 
@@ -517,7 +733,7 @@ impl App {
                 .components()
                 .any(|c| c == std::path::Component::ParentDir)
         {
-            self.status = "Note name must stay inside the workspace.".into();
+            self.notice = Some("Note name must stay inside the workspace.".into());
             return Task::none();
         }
         if rel.extension().is_none_or(|e| e != "md") {
@@ -531,18 +747,266 @@ impl App {
                 .map_or(Ok(()), std::fs::create_dir_all)
                 .and_then(|()| std::fs::write(&path, ""));
             if let Err(e) = result {
-                self.status = format!("Could not create {}: {e}", rel.display());
+                self.notice = Some(format!("Could not create {}: {e}", rel.display()));
                 return Task::none();
             }
         }
 
         self.new_name.clear();
+        self.filter.clear();
         self.tree.insert_file(&rel);
         Task::done(Message::Open(rel))
     }
 }
 
 const SOURCE_EDITOR_ID: &str = "source-editor";
+const SIDEBAR_WIDTH: f32 = 300.0;
+
+const MEDIUM: Font = Font {
+    weight: Weight::Medium,
+    ..Font::DEFAULT
+};
+
+const LABEL: Font = Font {
+    weight: Weight::Semibold,
+    ..Font::DEFAULT
+};
+
+fn line<'a>(
+    content: impl Into<String>,
+    size: f32,
+    font: Font,
+    color: impl Into<iced::Color>,
+) -> Element<'a, Message> {
+    container(
+        text(content.into())
+            .size(size)
+            .font(font)
+            .color(color)
+            .wrapping(text::Wrapping::None),
+    )
+    .width(Fill)
+    .clip(true)
+    .into()
+}
+
+fn row_label<'a>(label: &'a str, font: Font) -> Element<'a, Message> {
+    text(label)
+        .size(14)
+        .font(font)
+        .width(Fill)
+        .wrapping(text::Wrapping::WordOrGlyph)
+        .into()
+}
+
+fn icon_button<'a>(
+    icon: impl Into<Element<'a, Message>>,
+    tip: &'a str,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    tooltip(
+        button(icon)
+            .padding(7)
+            .width(30)
+            .height(30)
+            .style(icon_button_style)
+            .on_press_maybe(on_press),
+        container(text(tip).size(12))
+            .padding([4, 8])
+            .style(container::rounded_box),
+        tooltip::Position::Bottom,
+    )
+    .gap(6)
+    .delay(iced::time::Duration::from_millis(350))
+    .into()
+}
+
+fn hint<'a>(tip: &'a str) -> Element<'a, Message> {
+    container(text(tip).size(12))
+        .padding([4, 8])
+        .style(container::rounded_box)
+        .into()
+}
+
+fn mode_segment<'a>(
+    label: &'a str,
+    active: bool,
+    tip: &'a str,
+    mode: Mode,
+) -> Element<'a, Message> {
+    tooltip(
+        button(text(label).size(12))
+            .padding([4, 10])
+            .style(segment_style(active))
+            .on_press(Message::SetMode(mode)),
+        hint(tip),
+        tooltip::Position::Top,
+    )
+    .gap(6)
+    .delay(iced::time::Duration::from_millis(400))
+    .into()
+}
+
+fn segment_track(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(palette.background.weak.color.into()),
+        border: border::rounded(8),
+        ..container::Style::default()
+    }
+}
+
+fn segment_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let palette = theme.extended_palette();
+        let background = if active {
+            Some(palette.primary.base.color.scale_alpha(0.2).into())
+        } else {
+            match status {
+                button::Status::Hovered | button::Status::Pressed => {
+                    Some(palette.background.strong.color.into())
+                }
+                _ => None,
+            }
+        };
+        button::Style {
+            background,
+            text_color: if active {
+                palette.background.base.text
+            } else {
+                palette.background.base.text.scale_alpha(0.7)
+            },
+            border: border::rounded(6),
+            ..button::Style::default()
+        }
+    }
+}
+
+fn unsaved_style(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let mut style = button::Style {
+        text_color: palette.warning.base.color,
+        border: border::rounded(6),
+        ..button::Style::default()
+    };
+    if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+        style.background = Some(palette.warning.base.color.scale_alpha(0.16).into());
+    }
+    style
+}
+
+/// Whitespace-separated words. Markdown marks count as words; this is a writing
+/// glance, not a rendered-text count.
+fn word_count(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
+fn words_label(n: usize) -> String {
+    match n {
+        0 => "Empty".into(),
+        1 => "1 word".into(),
+        n => format!("{n} words"),
+    }
+}
+
+fn tree_button<'a>(
+    body: impl Into<Element<'a, Message>>,
+    pad: Padding,
+    selected: bool,
+    message: Message,
+) -> Element<'a, Message> {
+    button(body)
+        .width(Fill)
+        .padding(pad)
+        .style(tree_row_style(selected))
+        .on_press(message)
+        .into()
+}
+
+fn sidebar_panel(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(palette.background.weakest.color.into()),
+        text_color: Some(palette.background.base.text),
+        ..container::Style::default()
+    }
+}
+
+fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let mut style = text_input::default(theme, status);
+    style.border.radius = 8.0.into();
+    style
+}
+
+fn rounded_primary(theme: &Theme, status: button::Status) -> button::Style {
+    let mut style = button::primary(theme, status);
+    style.border = style.border.rounded(8);
+    style
+}
+
+fn rounded_subtle(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let mut style = button::Style {
+        text_color: palette.background.base.text,
+        background: Some(palette.background.weaker.color.into()),
+        border: border::rounded(8),
+        ..button::Style::default()
+    };
+    if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+        style.background = Some(palette.background.strong.color.into());
+    }
+    if status == button::Status::Disabled {
+        style.text_color = style.text_color.scale_alpha(0.4);
+    }
+    style
+}
+
+fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let mut style = button::Style {
+        text_color: palette.background.base.text,
+        border: border::rounded(8),
+        ..button::Style::default()
+    };
+    match status {
+        button::Status::Hovered => {
+            style.background = Some(palette.background.weak.color.into());
+        }
+        button::Status::Pressed => {
+            style.background = Some(palette.background.strong.color.into());
+        }
+        button::Status::Disabled => {
+            style.text_color = style.text_color.scale_alpha(0.35);
+        }
+        button::Status::Active => {}
+    }
+    style
+}
+
+fn tree_row_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let palette = theme.extended_palette();
+        let background = if selected {
+            let alpha = match status {
+                button::Status::Hovered | button::Status::Pressed => 0.28,
+                _ => 0.16,
+            };
+            Some(palette.primary.base.color.scale_alpha(alpha).into())
+        } else {
+            match status {
+                button::Status::Hovered => Some(palette.background.weak.color.into()),
+                button::Status::Pressed => Some(palette.background.strong.color.into()),
+                _ => None,
+            }
+        };
+        button::Style {
+            background,
+            text_color: palette.background.base.text,
+            border: border::rounded(6),
+            ..button::Style::default()
+        }
+    }
+}
 
 /// Ctrl+S saves, Ctrl+E toggles live preview, Tab inserts spaces.
 fn editor_bindings(kp: KeyPress) -> Option<Binding<Message>> {
@@ -604,5 +1068,20 @@ fn save_last_workspace(dir: &Path) {
     if let Some(file) = config_file() {
         let _ = file.parent().map(std::fs::create_dir_all);
         let _ = std::fs::write(file, dir.to_string_lossy().as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{word_count, words_label};
+
+    #[test]
+    fn word_count_splits_on_whitespace() {
+        assert_eq!(word_count(""), 0);
+        assert_eq!(word_count("  hello   world\n"), 2);
+        assert_eq!(word_count("one"), 1);
+        assert_eq!(words_label(0), "Empty");
+        assert_eq!(words_label(1), "1 word");
+        assert_eq!(words_label(3), "3 words");
     }
 }

@@ -11,38 +11,79 @@ const FOLDER_OPEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 
 const FILE_TEXT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>"#;
 
+const CHEVRON_RIGHT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
+
+const CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>"#;
+
+const REFRESH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>"#;
+
 static FOLDER_H: LazyLock<svg::Handle> =
     LazyLock::new(|| svg::Handle::from_memory(FOLDER.as_bytes()));
 static FOLDER_OPEN_H: LazyLock<svg::Handle> =
     LazyLock::new(|| svg::Handle::from_memory(FOLDER_OPEN.as_bytes()));
 static FILE_H: LazyLock<svg::Handle> =
     LazyLock::new(|| svg::Handle::from_memory(FILE_TEXT.as_bytes()));
+static CHEVRON_RIGHT_H: LazyLock<svg::Handle> =
+    LazyLock::new(|| svg::Handle::from_memory(CHEVRON_RIGHT.as_bytes()));
+static CHEVRON_DOWN_H: LazyLock<svg::Handle> =
+    LazyLock::new(|| svg::Handle::from_memory(CHEVRON_DOWN.as_bytes()));
+static REFRESH_H: LazyLock<svg::Handle> =
+    LazyLock::new(|| svg::Handle::from_memory(REFRESH.as_bytes()));
 
-const SIZE: f32 = 15.0;
-
-fn icon<'a>(handle: &svg::Handle, color: impl Fn(&Theme) -> Color + 'a) -> Svg<'a> {
+fn icon<'a>(handle: &svg::Handle, size: f32, color: impl Fn(&Theme) -> Color + 'a) -> Svg<'a> {
     Svg::new(handle.clone())
-        .width(SIZE)
-        .height(SIZE)
+        .width(size)
+        .height(size)
         .style(move |theme, _status| svg::Style {
             color: Some(color(theme)),
         })
 }
 
+fn ink(alpha: f32) -> impl Fn(&Theme) -> Color {
+    move |theme| {
+        theme
+            .extended_palette()
+            .background
+            .base
+            .text
+            .scale_alpha(alpha)
+    }
+}
+
 /// Folder icon in the theme's accent color.
 pub fn folder<'a>(open: bool) -> Svg<'a> {
     let handle = if open { &*FOLDER_OPEN_H } else { &*FOLDER_H };
-    icon(handle, |t| t.extended_palette().primary.base.color)
+    icon(handle, 16.0, |t| t.extended_palette().primary.base.color)
 }
 
-/// Note icon; uses the on-accent color when the row is selected.
+/// Note icon; accent-tinted when the row is the open note.
 pub fn file<'a>(selected: bool) -> Svg<'a> {
-    icon(&FILE_H, move |t| {
-        let p = t.extended_palette();
+    icon(&FILE_H, 16.0, move |t| {
+        let palette = t.extended_palette();
         if selected {
-            p.primary.base.text
+            palette.primary.base.color
         } else {
-            p.background.base.text.scale_alpha(0.7)
+            palette.background.base.text.scale_alpha(0.8)
         }
     })
+}
+
+/// Disclosure chevron. Brighter when the folder is expanded.
+pub fn chevron<'a>(open: bool) -> Svg<'a> {
+    let handle = if open {
+        &*CHEVRON_DOWN_H
+    } else {
+        &*CHEVRON_RIGHT_H
+    };
+    icon(handle, 14.0, ink(if open { 0.85 } else { 0.5 }))
+}
+
+/// Header action: pick a different workspace folder.
+pub fn open_folder<'a>() -> Svg<'a> {
+    icon(&FOLDER_OPEN_H, 16.0, ink(0.9))
+}
+
+/// Header action: rescan the workspace.
+pub fn refresh<'a>() -> Svg<'a> {
+    icon(&REFRESH_H, 15.0, ink(0.9))
 }
