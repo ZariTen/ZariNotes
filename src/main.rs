@@ -2,6 +2,10 @@
 //!
 //! Pick a workspace folder, browse its `.md` files, and edit them as plain text.
 
+mod icons;
+mod tree;
+
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use iced::keyboard::{self, Key};
@@ -9,7 +13,9 @@ use iced::widget::text_editor::{Binding, KeyPress};
 use iced::widget::{
     button, column, container, row, rule, scrollable, space, text, text_editor, text_input,
 };
-use iced::{Element, Fill, Font, Subscription, Task, Theme};
+use iced::{Element, Fill, Font, Padding, Subscription, Task, Theme};
+
+use tree::Dir;
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
@@ -22,8 +28,10 @@ fn main() -> iced::Result {
 
 struct App {
     workspace: Option<PathBuf>,
-    /// Markdown files in the workspace, relative to its root, sorted.
-    files: Vec<PathBuf>,
+    /// Folder/file tree of the workspace.
+    tree: Dir,
+    /// Workspace-relative folders currently expanded in the sidebar.
+    expanded: HashSet<PathBuf>,
     /// Currently open file, relative to the workspace root.
     current: Option<PathBuf>,
     content: text_editor::Content,
@@ -37,7 +45,8 @@ enum Message {
     PickWorkspace,
     WorkspacePicked(Option<PathBuf>),
     Refresh,
-    FilesScanned(Vec<PathBuf>),
+    FilesScanned(Dir),
+    ToggleDir(PathBuf),
     Open(PathBuf),
     Edit(text_editor::Action),
     Save,
@@ -49,7 +58,8 @@ impl App {
     fn new() -> (Self, Task<Message>) {
         let app = Self {
             workspace: None,
-            files: Vec::new(),
+            tree: Dir::default(),
+            expanded: HashSet::new(),
             current: None,
             content: text_editor::Content::new(),
             dirty: false,
@@ -94,14 +104,22 @@ impl App {
                 self.current = None;
                 self.content = text_editor::Content::new();
                 self.dirty = false;
+                self.tree = Dir::default();
+                self.expanded.clear();
                 self.status = format!("Workspace: {}", dir.display());
                 save_last_workspace(&dir);
                 self.workspace = Some(dir);
                 self.scan()
             }
             Message::Refresh => self.scan(),
-            Message::FilesScanned(files) => {
-                self.files = files;
+            Message::FilesScanned(tree) => {
+                self.tree = tree;
+                Task::none()
+            }
+            Message::ToggleDir(dir) => {
+                if !self.expanded.remove(&dir) {
+                    self.expanded.insert(dir);
+                }
                 Task::none()
             }
             Message::Open(rel) => {
@@ -116,6 +134,7 @@ impl App {
                     Ok(body) => {
                         self.content = text_editor::Content::with_text(&body);
                         self.status = format!("Opened {}", rel.display());
+                        self.expand_ancestors(&rel);
                         self.current = Some(rel);
                         self.dirty = false;
                     }
@@ -151,19 +170,12 @@ impl App {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "No workspace".into());
 
-        let file_list = column(self.files.iter().map(|rel| {
-            let selected = self.current.as_ref() == Some(rel);
-            button(text(rel.display().to_string()).size(14))
-                .width(Fill)
-                .style(if selected {
-                    button::primary
-                } else {
-                    button::text
-                })
-                .on_press(Message::Open(rel.clone()))
-                .into()
-        }))
-        .spacing(2);
+        let mut rows = Vec::new();
+        self.tree_rows(&self.tree, Path::new(""), 0, &mut rows);
+        if rows.is_empty() && self.workspace.is_some() {
+            rows.push(text("No notes yet.").size(13).into());
+        }
+        let file_list = column(rows).spacing(1);
 
         let new_note = text_input("new-note.md", &self.new_name)
             .on_input_maybe(self.workspace.is_some().then_some(Message::NewNameChanged))
@@ -247,8 +259,85 @@ impl App {
 
     fn scan(&self) -> Task<Message> {
         match self.workspace.clone() {
-            Some(ws) => Task::perform(async move { scan_markdown(&ws) }, Message::FilesScanned),
+            Some(ws) => Task::perform(async move { Dir::scan(&ws) }, Message::FilesScanned),
             None => Task::none(),
+        }
+    }
+
+    /// Flatten the visible part of `dir` into indented sidebar rows.
+    fn tree_rows<'a>(
+        &'a self,
+        dir: &'a Dir,
+        prefix: &Path,
+        depth: u16,
+        rows: &mut Vec<Element<'a, Message>>,
+    ) {
+        const INDENT: f32 = 14.0;
+        let pad = Padding::from([3, 6]).left(6.0 + f32::from(depth) * INDENT);
+
+        for (name, sub) in &dir.dirs {
+            let path = prefix.join(name);
+            let open = self.expanded.contains(&path);
+            let arrow = if sub.is_empty() {
+                " "
+            } else if open {
+                "▾"
+            } else {
+                "▸"
+            };
+            rows.push(
+                button(
+                    row![
+                        text(arrow).size(13).width(12),
+                        icons::folder(open),
+                        text(name.as_str()).size(14)
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Center),
+                )
+                .width(Fill)
+                .padding(pad)
+                .style(button::text)
+                .on_press(Message::ToggleDir(path.clone()))
+                .into(),
+            );
+            if open {
+                self.tree_rows(sub, &path, depth + 1, rows);
+            }
+        }
+
+        for name in &dir.files {
+            let path = prefix.join(name);
+            let selected = self.current.as_ref() == Some(&path);
+            let label = name.strip_suffix(".md").unwrap_or(name);
+            rows.push(
+                button(
+                    row![
+                        space().width(12),
+                        icons::file(selected),
+                        text(label).size(14)
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Center),
+                )
+                .width(Fill)
+                .padding(pad)
+                .style(if selected {
+                    button::primary
+                } else {
+                    button::text
+                })
+                .on_press(Message::Open(path))
+                .into(),
+            );
+        }
+    }
+
+    fn expand_ancestors(&mut self, rel: &Path) {
+        let mut dir = rel.parent();
+        while let Some(d) = dir.filter(|d| !d.as_os_str().is_empty()) {
+            self.expanded.insert(d.to_path_buf());
+            dir = d.parent();
         }
     }
 
@@ -305,10 +394,7 @@ impl App {
         }
 
         self.new_name.clear();
-        if !self.files.contains(&rel) {
-            self.files.push(rel.clone());
-            self.files.sort();
-        }
+        self.tree.insert_file(&rel);
         Task::done(Message::Open(rel))
     }
 }
@@ -322,34 +408,6 @@ fn editor_bindings(kp: KeyPress) -> Option<Binding<Message>> {
         return Some(Binding::Sequence(vec![Binding::Insert(' '); 4]));
     }
     Binding::from_key_press(kp)
-}
-
-/// Recursively collect `.md` files (skipping hidden entries), relative to `root`.
-fn scan_markdown(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if entry.file_name().to_string_lossy().starts_with('.') {
-                continue;
-            }
-            let Ok(ft) = entry.file_type() else { continue };
-            if ft.is_dir() {
-                stack.push(path);
-            } else if ft.is_file()
-                && path.extension().is_some_and(|e| e == "md")
-                && let Ok(rel) = path.strip_prefix(root)
-            {
-                out.push(rel.to_path_buf());
-            }
-        }
-    }
-    out.sort();
-    out
 }
 
 fn config_file() -> Option<PathBuf> {
