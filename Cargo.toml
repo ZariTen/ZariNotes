@@ -1,0 +1,13 @@
+[package]
+name = "zarinotes"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+iced = { version = "0.14", features = ["tokio"] }
+rfd = "0.17"
+
+[profile.release]
+strip = true
+lto = "thin"
