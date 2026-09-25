@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=ZariNotes
+GenericName=Markdown notes
+Comment=A minimal Markdown notes app
+Exec=zarinotes
+Icon=zarinotes
+Terminal=false
+Categories=Office;TextEditor;
+StartupWMClass=zarinotes
+StartupNotify=true
+SingleMainWindow=true
+Keywords=notes;markdown;editor;

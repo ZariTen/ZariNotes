@@ -31,8 +31,21 @@ fn main() -> iced::Result {
         .title(App::title)
         .subscription(App::subscription)
         .theme(|app: &App| theme::iced(app.appearance))
-        .window_size((1100.0, 720.0))
+        .window(window_settings())
         .run()
+}
+
+/// Matches `zarinotes.desktop` so the launcher icon attaches to the window.
+fn window_settings() -> iced::window::Settings {
+    iced::window::Settings {
+        size: iced::Size::new(1100.0, 720.0),
+        #[cfg(target_os = "linux")]
+        platform_specific: iced::window::settings::PlatformSpecific {
+            application_id: "zarinotes".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 struct App {

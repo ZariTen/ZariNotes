@@ -21,6 +21,30 @@ A minimal Markdown notes app written in Rust with [iced](https://iced.rs).
 - Footer shows the open note, word count, and cursor position. A `•` in the window title means unsaved changes
 - Light / Dark switch in the footer (remembered). Light is Retro Classic (vintage beige and slate); dark is Dolch Noir
 
+## Install
+
+Linux. `./install.sh` builds the release binary and installs it, the desktop entry, and the icon under `~/.local` (no root). `~/.local/bin` must be on `PATH`. System-wide: `sudo PREFIX=/usr ./install.sh`. Log out and back in if the launcher does not show the new entry.
+
+Nix installs that same desktop entry. Add the flake as an input:
+
+```nix
+{
+  inputs.zarinotes.url = "github:ZariTen/ZariNotes";
+
+  # NixOS
+  environment.systemPackages = [
+    inputs.zarinotes.packages.x86_64-linux.default
+  ];
+
+  # Home Manager
+  # home.packages = [
+  #   inputs.zarinotes.packages.${pkgs.stdenv.hostPlatform.system}.default
+  # ];
+}
+```
+
+Or, without a configuration: `nix profile install github:ZariTen/ZariNotes`. Log out and back in if the launcher does not pick up the new entry. `nix run github:ZariTen/ZariNotes` starts it without installing.
+
 ## Build & run
 
 On NixOS / with Nix flakes:
