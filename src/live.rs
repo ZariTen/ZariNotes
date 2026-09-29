@@ -9,15 +9,20 @@
 //! segment and is written back into `lines` after every edit. Keys that would
 //! leave the segment (arrows at its edges, Backspace at its start, …) are
 //! intercepted and move the cursor into the neighbouring segment.
+//!
+//! A selection is different: shift-arrows, drag, shift-click and select-all
+//! expand the editor across every spanned segment (shown as raw source) so
+//! the selection can be copied. It shrinks back to one segment when the
+//! selection collapses.
 
 use std::collections::HashMap;
 use std::ops::Range;
 
 use iced::advanced::widget::{self as advanced_widget, Id, Operation, operation};
 use iced::font::Weight;
-use iced::keyboard::{Key, key::Named};
+use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::scrollable::AbsoluteOffset;
-use iced::widget::text_editor::{Action, Binding, Cursor, KeyPress, Position};
+use iced::widget::text_editor::{Action, Binding, Cursor, KeyPress, Motion, Position};
 use iced::widget::{
     checkbox, column, container, markdown, mouse_area, row, scrollable, space, text, text_editor,
 };
@@ -44,6 +49,12 @@ pub enum Msg {
     Link(String),
     Save,
     ToggleMode,
+    /// Left button released. Ends a drag selection.
+    DragEnd,
+    /// Latest modifier state, so shift-click can extend a selection.
+    Modifiers(Modifiers),
+    /// Pointer moved over the raw editor while a drag is in progress.
+    EditorDrag(Point),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -86,8 +97,18 @@ pub struct Live {
     lines: Vec<String>,
     segments: Vec<Segment>,
     active: usize,
+    /// Document lines currently loaded in `editor`. One segment, unless a
+    /// selection spans several — those lines are raw source so they can be
+    /// selected and copied.
+    editor_lines: Range<usize>,
     editor: iced::widget::text_editor::Content,
     hover: Option<(usize, Point)>,
+    /// Left button is down; moves over other segments extend the selection.
+    dragging: bool,
+    /// Shift is held. A click then extends the selection instead of moving.
+    shift: bool,
+    /// The editor just hit-tested a drag. The fallback mapper should yield.
+    native_drag: bool,
 }
 
 impl Live {
@@ -100,8 +121,12 @@ impl Live {
             lines,
             segments: Vec::new(),
             active: 0,
+            editor_lines: 0..0,
             editor: iced::widget::text_editor::Content::new(),
             hover: None,
+            dragging: false,
+            shift: false,
+            native_drag: false,
         };
         live.rebuild();
         let task = live.set_cursor(cursor);
@@ -116,7 +141,7 @@ impl Live {
     pub fn cursor(&self) -> Position {
         let c = self.editor.cursor().position;
         Position {
-            line: self.segments[self.active].lines.start + c.line,
+            line: self.editor_lines.start + c.line,
             column: c.column,
         }
     }
@@ -129,12 +154,29 @@ impl Live {
     }
 
     pub fn update(&mut self, msg: Msg) -> (Task<Msg>, Outcome) {
+        let native_drag = self.native_drag;
+        self.native_drag = false;
         match msg {
             Msg::Edit(action) => {
+                if let Some(task) = self.redirected_selection(&action) {
+                    return (task, Outcome::None);
+                }
                 let is_edit = action.is_edit();
+                let click = matches!(action, Action::Click(_));
+                if click || matches!(action, Action::Drag(_)) {
+                    self.dragging = true;
+                }
+                if matches!(action, Action::Drag(_)) {
+                    self.native_drag = true;
+                }
+                if click && self.shift {
+                    let anchor = self.selection_anchor();
+                    self.editor.perform(action);
+                    return (self.show_selection(anchor, self.cursor()), Outcome::None);
+                }
                 self.editor.perform(action);
                 if !is_edit {
-                    return (self.scroll_into_view(), Outcome::None);
+                    return (self.after_cursor_change(), Outcome::None);
                 }
                 (self.sync_editor(), Outcome::Changed)
             }
@@ -171,11 +213,20 @@ impl Live {
             }
             Msg::Activate(i) => {
                 let pos = self.click_position(i);
-                (self.set_cursor(pos), Outcome::None)
+                self.dragging = true;
+                if self.shift {
+                    (self.extend_to(pos), Outcome::None)
+                } else {
+                    (self.set_cursor(pos), Outcome::None)
+                }
             }
             Msg::Hover(i, p) => {
                 self.hover = Some((i, p));
-                (Task::none(), Outcome::None)
+                if !self.dragging {
+                    return (Task::none(), Outcome::None);
+                }
+                let pos = self.click_position(i);
+                (self.extend_to(pos), Outcome::None)
             }
             Msg::ToggleTask(line) => {
                 let Some(l) = self.lines.get_mut(line) else {
@@ -194,6 +245,34 @@ impl Live {
             Msg::Link(url) => (Task::none(), Outcome::Link(url)),
             Msg::Save => (Task::none(), Outcome::Save),
             Msg::ToggleMode => (Task::none(), Outcome::ToggleMode),
+            Msg::DragEnd => {
+                let was_dragging = self.dragging;
+                self.dragging = false;
+                if !was_dragging {
+                    return (Task::none(), Outcome::None);
+                }
+                // A click focuses the editor, then the release arrives. Keep
+                // that focus so typing works and a one-line selection stays
+                // visible.
+                (
+                    Task::batch([self.after_cursor_change(), self.focus()]),
+                    Outcome::None,
+                )
+            }
+            Msg::Modifiers(modifiers) => {
+                self.shift = modifiers.shift();
+                (Task::none(), Outcome::None)
+            }
+            Msg::EditorDrag(p) => {
+                if native_drag || !self.dragging || !self.spans_extra() {
+                    return (Task::none(), Outcome::None);
+                }
+                let local =
+                    ((p.y / LINE_HEIGHT) as usize).min(self.editor_lines.len().saturating_sub(1));
+                let line = (self.editor_lines.start + local).min(self.lines.len() - 1);
+                let column = estimate_raw_column(&self.lines[line], p.x);
+                (self.extend_to(Position { line, column }), Outcome::None)
+            }
         }
     }
 
@@ -207,13 +286,20 @@ impl Live {
         settings.style.inline_code_highlight.background = look.accent.into();
         settings.style.inline_code_highlight.border.radius = 4.0.into();
 
-        let blocks = self.segments.iter().enumerate().map(|(i, seg)| {
-            if i == self.active {
-                self.editor_view()
-            } else {
-                self.rendered(i, seg, settings)
+        let mut blocks = Vec::with_capacity(self.segments.len());
+        let mut i = 0;
+        while i < self.segments.len() {
+            let start = self.segments[i].lines.start;
+            if self.editor_lines.contains(&start) {
+                if start == self.editor_lines.start {
+                    blocks.push(self.editor_view());
+                }
+                i += 1;
+                continue;
             }
-        });
+            blocks.push(self.rendered(i, &self.segments[i], settings));
+            i += 1;
+        }
 
         scrollable(
             container(column(blocks).max_width(820).padding([24, 32]))
@@ -242,7 +328,7 @@ impl Live {
         let at_end = no_sel && at_bottom && c.position.column >= line_text.len();
         let at_line_end = c.position.column >= line_text.len();
 
-        text_editor(&self.editor)
+        let editor = text_editor(&self.editor)
             .id(Id::new(EDITOR_ID))
             .on_action(Msg::Edit)
             .size(TEXT_SIZE)
@@ -289,7 +375,14 @@ impl Live {
                 background: Color::TRANSPARENT.into(),
                 border: Border::default(),
                 ..iced::widget::text_editor::default(theme, status)
-            })
+            });
+        // Always the same wrapper. Swapping it on and off when a drag starts
+        // rebuilds the editor widget, which drops focus — the caret and the
+        // selection highlight are only drawn while it is focused, and keys
+        // stop landing.
+        mouse_area(editor)
+            .on_move(Msg::EditorDrag)
+            .on_release(Msg::DragEnd)
             .into()
     }
 
@@ -335,6 +428,7 @@ impl Live {
                 .padding(Padding::ZERO.left(indent)),
         )
         .on_press(Msg::Activate(i))
+        .on_release(Msg::DragEnd)
         .on_move(move |p| Msg::Hover(i, p))
         .interaction(mouse::Interaction::Text)
         .into()
@@ -392,11 +486,11 @@ impl Live {
         let line = pos.line.min(self.lines.len() - 1);
         self.active = self.segment_at(line);
         let range = self.segments[self.active].lines.clone();
-        self.editor =
-            iced::widget::text_editor::Content::with_text(&self.lines[range.clone()].join("\n"));
+        self.editor_lines = range.clone();
+        self.editor = iced::widget::text_editor::Content::with_text(&self.lines[range].join("\n"));
         self.editor.move_to(Cursor {
             position: Position {
-                line: line - range.start,
+                line: line - self.editor_lines.start,
                 column: floor_char_boundary(&self.lines[line], pos.column),
             },
             selection: None,
@@ -406,18 +500,19 @@ impl Live {
 
     /// Write the editor's text back into `lines` and re-segment around the cursor.
     fn sync_editor(&mut self) -> Task<Msg> {
-        let old = self.segments[self.active].lines.clone();
+        let old = self.editor_lines.clone();
         let cursor = self.cursor();
         let new: Vec<String> = self.editor.text().split('\n').map(str::to_owned).collect();
         let new_len = new.len();
         self.lines.splice(old.clone(), new);
         self.rebuild();
 
-        let idx = self.segment_at(cursor.line);
-        let range = &self.segments[idx].lines;
+        let idx = self.segment_at(cursor.line.min(self.lines.len() - 1));
+        let range = self.segments[idx].lines.clone();
         if range.start == old.start && range.len() == new_len {
             // Same segment, editor already holds exactly its text.
             self.active = idx;
+            self.editor_lines = range;
             self.scroll_into_view()
         } else {
             self.set_cursor(cursor)
@@ -447,6 +542,166 @@ impl Live {
             _ => return Task::none(),
         };
         self.set_cursor(target)
+    }
+
+    /// A select-all or a select-motion that would leave the editor buffer.
+    /// Those are redirected so the selection can span segments.
+    fn redirected_selection(&mut self, action: &Action) -> Option<Task<Msg>> {
+        match action {
+            Action::SelectAll => Some(self.select_all()),
+            Action::Select(motion) if self.selection_leaves(*motion) => {
+                Some(self.extend_by(*motion))
+            }
+            _ => None,
+        }
+    }
+
+    fn selection_leaves(&self, motion: Motion) -> bool {
+        let c = self.editor.cursor().position;
+        let range = &self.editor_lines;
+        if range.is_empty() {
+            return false;
+        }
+        let at_top = c.line == 0;
+        let at_bottom = c.line + 1 >= range.len();
+        let line_len = self.editor.line(c.line).map(|l| l.text.len()).unwrap_or(0);
+        let at_start = at_top && c.column == 0;
+        let at_end = at_bottom && c.column >= line_len;
+        match motion {
+            Motion::Up => at_top && range.start > 0,
+            Motion::Down => at_bottom && range.end < self.lines.len(),
+            Motion::Left | Motion::WordLeft => at_start && range.start > 0,
+            Motion::Right | Motion::WordRight => at_end && range.end < self.lines.len(),
+            Motion::PageUp | Motion::DocumentStart => range.start > 0,
+            Motion::PageDown | Motion::DocumentEnd => range.end < self.lines.len(),
+            Motion::Home | Motion::End => false,
+        }
+    }
+
+    fn extend_by(&mut self, motion: Motion) -> Task<Msg> {
+        let anchor = self.selection_anchor();
+        let head = self.motion_target(motion);
+        self.show_selection(anchor, head)
+    }
+
+    fn extend_to(&mut self, head: Position) -> Task<Msg> {
+        let anchor = self.selection_anchor();
+        self.show_selection(anchor, head)
+    }
+
+    fn select_all(&mut self) -> Task<Msg> {
+        let last = self.lines.len() - 1;
+        self.show_selection(
+            Position { line: 0, column: 0 },
+            Position {
+                line: last,
+                column: self.lines[last].len(),
+            },
+        )
+    }
+
+    /// Where `motion` lands, in document coordinates, stepping out of the editor if needed.
+    fn motion_target(&self, motion: Motion) -> Position {
+        let cur = self.cursor();
+        let last = self.lines.len() - 1;
+        let on = |line: usize, column: usize| Position {
+            line,
+            column: floor_char_boundary(&self.lines[line], column.min(self.lines[line].len())),
+        };
+        match motion {
+            Motion::Up => on(cur.line.saturating_sub(1), cur.column),
+            Motion::Down => on((cur.line + 1).min(last), cur.column),
+            Motion::Left | Motion::WordLeft | Motion::Home => {
+                if cur.line == 0 {
+                    on(0, 0)
+                } else {
+                    on(cur.line - 1, self.lines[cur.line - 1].len())
+                }
+            }
+            Motion::Right | Motion::WordRight | Motion::End => {
+                if cur.line >= last {
+                    on(last, self.lines[last].len())
+                } else {
+                    on(cur.line + 1, 0)
+                }
+            }
+            Motion::PageUp | Motion::DocumentStart => on(0, 0),
+            Motion::PageDown | Motion::DocumentEnd => on(last, self.lines[last].len()),
+        }
+    }
+
+    fn selection_anchor(&self) -> Position {
+        let c = self.editor.cursor();
+        let local = c.selection.unwrap_or(c.position);
+        Position {
+            line: self.editor_lines.start + local.line,
+            column: local.column,
+        }
+    }
+
+    /// Show `anchor..=head` as one raw editor selection, covering whole segments.
+    fn show_selection(&mut self, anchor: Position, head: Position) -> Task<Msg> {
+        let anchor = self.clamp_pos(anchor);
+        let head = self.clamp_pos(head);
+        if anchor == head {
+            return self.set_cursor(head);
+        }
+        let lo = anchor.line.min(head.line);
+        let hi = anchor.line.max(head.line);
+        let start = self.segments[self.segment_at(lo)].lines.start;
+        let end = self.segments[self.segment_at(hi)].lines.end;
+        let local = |p: Position| Position {
+            line: p.line - start,
+            column: floor_char_boundary(
+                &self.lines[p.line],
+                p.column.min(self.lines[p.line].len()),
+            ),
+        };
+        self.load_editor(
+            start..end,
+            Cursor {
+                position: local(head),
+                selection: Some(local(anchor)),
+            },
+        )
+    }
+
+    fn load_editor(&mut self, range: Range<usize>, cursor: Cursor) -> Task<Msg> {
+        if self.editor_lines != range {
+            self.editor = iced::widget::text_editor::Content::with_text(
+                &self.lines[range.clone()].join("\n"),
+            );
+            self.editor_lines = range;
+        }
+        self.editor.move_to(cursor);
+        let head = self.editor_lines.start + self.editor.cursor().position.line;
+        self.active = self.segment_at(head.min(self.lines.len() - 1));
+        self.focus()
+    }
+
+    fn spans_extra(&self) -> bool {
+        self.editor_lines != self.segments[self.active].lines
+    }
+
+    fn clamp_pos(&self, pos: Position) -> Position {
+        let line = pos.line.min(self.lines.len() - 1);
+        Position {
+            line,
+            column: floor_char_boundary(&self.lines[line], pos.column.min(self.lines[line].len())),
+        }
+    }
+
+    /// Drop back to the caret's segment once a cross-segment selection is gone.
+    fn after_cursor_change(&mut self) -> Task<Msg> {
+        if self.dragging || self.editor.cursor().selection.is_some() {
+            return self.scroll_into_view();
+        }
+        let line = self.cursor().line.min(self.lines.len() - 1);
+        let seg = self.segments[self.segment_at(line)].lines.clone();
+        if seg == self.editor_lines {
+            return self.scroll_into_view();
+        }
+        self.set_cursor(self.cursor())
     }
 
     /// Best-effort mapping from a click on rendered Markdown to a source position.
@@ -587,6 +842,16 @@ fn continue_list(line: &str) -> Option<Binding<Msg>> {
     seq.extend(line[..indent_len].chars().map(Binding::Insert));
     seq.extend(marker.chars().map(Binding::Insert));
     Some(Binding::Sequence(seq))
+}
+
+/// Estimate which source column a click at `x` pixels into raw editor text maps to.
+fn estimate_raw_column(raw: &str, x: f32) -> usize {
+    let char_w = TEXT_SIZE * 0.5;
+    let target = (x.max(0.0) / char_w).round() as usize;
+    raw.char_indices()
+        .nth(target)
+        .map(|(i, _)| i)
+        .unwrap_or(raw.len())
 }
 
 /// Estimate which source column a click at `x` pixels into a rendered line maps to.
@@ -837,6 +1102,104 @@ mod tests {
         let (mut live, _) = Live::new("- [ ] a\nb", Position { line: 1, column: 0 });
         let _ = live.update(Msg::ToggleTask(0));
         assert_eq!(live.text(), "- [x] a\nb");
+    }
+
+    use iced::keyboard::Modifiers;
+    use iced::widget::text_editor::{Edit, Motion};
+
+    #[test]
+    fn shift_down_selects_into_the_next_line() {
+        let (mut live, _) = Live::new("one\ntwo", Position { line: 0, column: 0 });
+        let _ = live.update(Msg::Edit(Action::Select(
+            iced::widget::text_editor::Motion::Down,
+        )));
+        assert_eq!(live.cursor(), Position { line: 1, column: 0 });
+        assert_eq!(live.editor.selection().as_deref(), Some("one\n"));
+    }
+
+    #[test]
+    fn shift_down_can_cross_more_than_one_line() {
+        let (mut live, _) = Live::new("a\nb\nc", Position { line: 0, column: 0 });
+        let _ = live.update(Msg::Edit(Action::Select(Motion::Down)));
+        let _ = live.update(Msg::Edit(Action::Select(Motion::Down)));
+        assert_eq!(live.cursor(), Position { line: 2, column: 0 });
+        assert_eq!(live.editor.selection().as_deref(), Some("a\nb\n"));
+    }
+
+    #[test]
+    fn shift_up_selects_the_previous_line() {
+        let (mut live, _) = Live::new("one\ntwo", Position { line: 1, column: 0 });
+        let _ = live.update(Msg::Edit(Action::Select(Motion::Up)));
+        assert_eq!(live.cursor(), Position { line: 0, column: 0 });
+        assert_eq!(live.editor.selection().as_deref(), Some("one\n"));
+    }
+
+    #[test]
+    fn shift_down_from_end_of_line_includes_the_next_line() {
+        let (mut live, _) = Live::new("one\ntwo", Position { line: 0, column: 3 });
+        let _ = live.update(Msg::Edit(Action::Select(Motion::Down)));
+        assert_eq!(live.editor.selection().as_deref(), Some("\ntwo"));
+    }
+
+    #[test]
+    fn select_all_covers_every_line() {
+        let (mut live, _) = Live::new("one\ntwo\nthree", Position { line: 1, column: 1 });
+        let _ = live.update(Msg::Edit(Action::SelectAll));
+        assert_eq!(live.editor.selection().as_deref(), Some("one\ntwo\nthree"));
+    }
+
+    #[test]
+    fn deleting_a_cross_line_selection_removes_those_lines() {
+        let (mut live, _) = Live::new("one\ntwo\nthree", Position { line: 0, column: 0 });
+        let _ = live.update(Msg::Edit(Action::Select(Motion::Down)));
+        let _ = live.update(Msg::Edit(Action::Edit(Edit::Delete)));
+        assert_eq!(live.text(), "two\nthree");
+        assert_eq!(live.cursor(), Position { line: 0, column: 0 });
+    }
+
+    #[test]
+    fn dragging_onto_the_next_line_selects_it() {
+        let (mut live, _) = Live::new("one\ntwo", Position { line: 0, column: 3 });
+        let _ = live.update(Msg::Edit(Action::Click(Point::ORIGIN)));
+        let _ = live.update(Msg::Hover(1, Point::new(10_000.0, 0.0)));
+        let sel = live.editor.selection().expect("selection");
+        assert!(sel.contains('\n'), "{sel:?}");
+        assert!(sel.contains("two"), "{sel:?}");
+    }
+
+    #[test]
+    fn shift_click_selects_from_the_cursor() {
+        let (mut live, _) = Live::new("one\ntwo", Position { line: 0, column: 0 });
+        let _ = live.update(Msg::Modifiers(Modifiers::SHIFT));
+        live.hover = Some((1, Point::new(10_000.0, 0.0)));
+        let _ = live.update(Msg::Activate(1));
+        assert_eq!(live.editor.selection().as_deref(), Some("one\ntwo"));
+    }
+
+    #[test]
+    fn moving_collapses_a_cross_line_selection() {
+        let (mut live, _) = Live::new("one\ntwo", Position { line: 0, column: 0 });
+        let _ = live.update(Msg::Edit(Action::Select(Motion::Down)));
+        assert!(live.editor.line_count() > 1);
+        let _ = live.update(Msg::Edit(Action::Move(Motion::DocumentStart)));
+        assert_eq!(live.editor.line_count(), 1);
+        assert!(live.editor.selection().is_none());
+        assert_eq!(live.text(), "one\ntwo");
+    }
+
+    #[test]
+    fn selecting_words_on_one_line_keeps_the_selection() {
+        let (mut live, _) = Live::new("alpha beta gamma", Position { line: 0, column: 0 });
+        let _ = live.update(Msg::Edit(Action::Select(Motion::WordRight)));
+        assert_eq!(live.editor.line_count(), 1);
+        assert_eq!(live.editor.selection().as_deref(), Some("alpha"));
+        // A click-drag releases. That must not wipe a one-line selection or
+        // the buffer the user is typing into.
+        let _ = live.update(Msg::Edit(Action::Click(Point::ORIGIN)));
+        let _ = live.update(Msg::DragEnd);
+        let _ = live.update(Msg::Edit(Action::Edit(Edit::Insert('Z'))));
+        assert!(live.text().contains('Z'), "{}", live.text());
+        assert_eq!(live.editor.line_count(), 1);
     }
 
     #[test]

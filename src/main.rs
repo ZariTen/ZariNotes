@@ -12,8 +12,10 @@ mod tree;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use iced::event::{self, Event};
 use iced::font::Weight;
 use iced::keyboard::{self, Key};
+use iced::mouse;
 use iced::widget::text_editor::{Binding, Cursor, KeyPress, Position};
 use iced::widget::{
     button, column, container, row, rule, scrollable, space, text, text_editor, text_input, tooltip,
@@ -307,16 +309,20 @@ impl App {
 
     fn subscription(&self) -> Subscription<Message> {
         // Shortcuts when no editor is focused (the editors handle their own bindings).
-        keyboard::listen().filter_map(|event| match event {
-            keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => {
-                match key.as_ref() {
-                    Key::Character("s") => Some(Message::Save),
-                    Key::Character("e") => Some(Message::ToggleMode),
-                    _ => None,
+        // Pointer events let live preview extend a selection past the active line.
+        Subscription::batch([
+            keyboard::listen().filter_map(|event| match event {
+                keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => {
+                    match key.as_ref() {
+                        Key::Character("s") => Some(Message::Save),
+                        Key::Character("e") => Some(Message::ToggleMode),
+                        _ => None,
+                    }
                 }
-            }
-            _ => None,
-        })
+                _ => None,
+            }),
+            event::listen_with(live_pointer),
+        ])
     }
 
     // ── helpers ─────────────────────────────────────────────────
@@ -420,13 +426,13 @@ impl App {
                 segment(
                     "Live",
                     self.mode == Mode::Live,
-                    "Rendered notes, except the line under the cursor (Ctrl+E)",
+                    "Rendered notes. A selection shows source so you can copy it (Ctrl+E)",
                     Message::SetMode(Mode::Live),
                 ),
                 segment(
                     "Source",
                     self.mode == Mode::Source,
-                    "Raw Markdown, for editing across lines (Ctrl+E)",
+                    "Raw Markdown for the whole note (Ctrl+E)",
                     Message::SetMode(Mode::Source),
                 ),
             ]
@@ -1269,6 +1275,23 @@ fn save_appearance(appearance: Appearance) {
     if let Some(dir) = config_dir() {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(dir.join("theme"), appearance.as_str());
+    }
+}
+
+fn live_pointer(
+    event: Event,
+    _status: event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            Some(Message::Live(live::Msg::DragEnd))
+        }
+        Event::Keyboard(
+            keyboard::Event::KeyPressed { modifiers, .. }
+            | keyboard::Event::KeyReleased { modifiers, .. },
+        ) => Some(Message::Live(live::Msg::Modifiers(modifiers))),
+        _ => None,
     }
 }
 

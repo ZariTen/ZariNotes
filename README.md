@@ -14,8 +14,9 @@ A minimal Markdown notes app written in Rust with [iced](https://iced.rs).
   Code blocks, tables and front matter switch to source as a whole.
 - Clickable task checkboxes, links open notes (relative `.md` paths) or the browser,
   Enter continues lists
+- Select and copy across lines in live preview (drag, shift-arrows, Ctrl+A). The selected lines show as source, so the copy is the Markdown
 - **Source mode** (`Ctrl+E` or the Live / Source switch): plain monospace editor with
-  Markdown highlighting — use it for multi-line selections
+  Markdown highlighting for the whole note
 - `Ctrl+S` to save; the footer shows Unsaved until you do. Unsaved changes are also
   auto-saved when switching notes or workspaces
 - Footer shows the open note, word count, and cursor position. A `•` in the window title means unsaved changes
