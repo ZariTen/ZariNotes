@@ -59,6 +59,70 @@ impl App {
         }
     }
 
+    fn capture(&self) -> Option<super::history::Snapshot> {
+        Some(super::history::Snapshot {
+            text: self.text()?,
+            cursor: self.cursor()?,
+        })
+    }
+
+    pub(super) fn sync_dirty(&mut self) {
+        self.dirty = self.text().as_ref() != self.saved.as_ref();
+    }
+
+    /// Run `apply`, snapshotting the note first when `kind` starts a new undo step.
+    pub(super) fn record_edit<T>(
+        &mut self,
+        kind: super::history::EditKind,
+        apply: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let before = self.capture().and_then(|snap| {
+            let text = snap.text.clone();
+            self.history.begin(kind, snap).then_some(text)
+        });
+        let result = apply(self);
+        if let Some(before) = before {
+            self.history
+                .finish(self.text().as_deref() != Some(before.as_str()));
+        }
+        self.sync_dirty();
+        result
+    }
+
+    pub(super) fn update_live(
+        &mut self,
+        msg: crate::live::Msg,
+    ) -> (Task<crate::live::Msg>, crate::live::Outcome) {
+        let Some(Doc::Live(live)) = &mut self.doc else {
+            return (Task::none(), crate::live::Outcome::None);
+        };
+        live.update(msg)
+    }
+
+    pub(super) fn undo(&mut self) -> Task<Message> {
+        self.step(true)
+    }
+
+    pub(super) fn redo(&mut self) -> Task<Message> {
+        self.step(false)
+    }
+
+    fn step(&mut self, undo: bool) -> Task<Message> {
+        let Some(current) = self.capture() else {
+            return Task::none();
+        };
+        let Some(snap) = (if undo {
+            self.history.undo(current)
+        } else {
+            self.history.redo(current)
+        }) else {
+            return Task::none();
+        };
+        let task = self.load(&snap.text, snap.cursor);
+        self.sync_dirty();
+        task
+    }
+
     pub(super) fn toggle_mode(&mut self) -> Task<Message> {
         self.mode = match self.mode {
             Mode::Live => Mode::Source,
@@ -114,8 +178,9 @@ impl App {
         else {
             return;
         };
-        match std::fs::write(ws.join(rel), text) {
+        match std::fs::write(ws.join(rel), &text) {
             Ok(()) => {
+                self.saved = Some(text);
                 self.dirty = false;
                 self.notice = None;
             }

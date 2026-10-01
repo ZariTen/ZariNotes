@@ -81,6 +81,13 @@ impl Live {
                     match kp.key.as_ref() {
                         Key::Character("s") => return Some(Binding::Custom(Msg::Save)),
                         Key::Character("e") => return Some(Binding::Custom(Msg::ToggleMode)),
+                        Key::Character("z" | "Z") if m.shift() => {
+                            return Some(Binding::Custom(Msg::Redo));
+                        }
+                        Key::Character("y" | "Y") if !m.shift() => {
+                            return Some(Binding::Custom(Msg::Redo));
+                        }
+                        Key::Character("z" | "Z") => return Some(Binding::Custom(Msg::Undo)),
                         _ => {}
                     }
                 }

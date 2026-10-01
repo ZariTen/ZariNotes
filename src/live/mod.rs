@@ -50,6 +50,8 @@ pub enum Msg {
     Link(String),
     Save,
     ToggleMode,
+    Undo,
+    Redo,
     /// Left button released. Ends a drag selection.
     DragEnd,
     /// Latest modifier state, so shift-click can extend a selection.
@@ -73,6 +75,8 @@ pub enum Outcome {
     Save,
     ToggleMode,
     Link(String),
+    Undo,
+    Redo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -145,6 +149,10 @@ impl Live {
             line: self.editor_lines.start + c.line,
             column: c.column,
         }
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.editor.selection().is_some()
     }
 
     pub fn focus(&self) -> Task<Msg> {
@@ -246,6 +254,8 @@ impl Live {
             Msg::Link(url) => (Task::none(), Outcome::Link(url)),
             Msg::Save => (Task::none(), Outcome::Save),
             Msg::ToggleMode => (Task::none(), Outcome::ToggleMode),
+            Msg::Undo => (Task::none(), Outcome::Undo),
+            Msg::Redo => (Task::none(), Outcome::Redo),
             Msg::DragEnd => {
                 let was_dragging = self.dragging;
                 self.dragging = false;

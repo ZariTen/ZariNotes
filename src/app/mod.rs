@@ -1,6 +1,7 @@
 //! Application state and the update loop.
 
 mod document;
+mod history;
 mod sidebar;
 mod style;
 mod view;
@@ -10,7 +11,7 @@ use std::path::PathBuf;
 
 use iced::event::{self, Event};
 use iced::font::Weight;
-use iced::keyboard::{self, Key};
+use iced::keyboard;
 use iced::mouse;
 use iced::widget::text_editor::{self, Position};
 use iced::{Font, Subscription, Task};
@@ -55,6 +56,10 @@ struct App {
     /// Preferred editing mode, kept across notes.
     mode: Mode,
     dirty: bool,
+    /// Text last loaded or saved. Undo compares against it, so reverting a
+    /// change clears the unsaved mark instead of leaving it stuck on.
+    saved: Option<String>,
+    history: history::History,
     new_name: String,
     /// Sidebar filter. Empty shows the full tree.
     filter: String,
@@ -87,6 +92,8 @@ enum Message {
     ToggleMode,
     SetMode(Mode),
     Save,
+    Undo,
+    Redo,
     NewNameChanged(String),
     FilterChanged(String),
     CreateNote,
@@ -103,6 +110,8 @@ impl App {
             doc: None,
             mode: Mode::Live,
             dirty: false,
+            saved: None,
+            history: history::History::default(),
             new_name: String::new(),
             filter: String::new(),
             notice: None,
@@ -146,6 +155,8 @@ impl App {
                 self.current = None;
                 self.doc = None;
                 self.dirty = false;
+                self.saved = None;
+                self.history.clear();
                 self.tree = Dir::default();
                 self.expanded.clear();
                 self.filter.clear();
@@ -178,8 +189,13 @@ impl App {
                         self.notice = None;
                         self.expand_ancestors(&rel);
                         self.current = Some(rel);
+                        self.history.clear();
                         self.dirty = false;
-                        self.load(&body, Position { line: 0, column: 0 })
+                        let task = self.load(&body, Position { line: 0, column: 0 });
+                        // Compare undo against the editor's text, not the raw
+                        // file, so a normalized newline doesn't look unsaved.
+                        self.saved = self.text();
+                        task
                     }
                     Err(e) => {
                         self.notice = Some(format!("Failed to open {}: {e}", rel.display()));
@@ -188,22 +204,50 @@ impl App {
                 }
             }
             Message::Edit(action) => {
-                if let Some(Doc::Source(content)) = &mut self.doc {
-                    self.dirty |= action.is_edit();
-                    content.perform(action);
+                let selected = matches!(&self.doc, Some(Doc::Source(content)) if content.selection().is_some());
+                match history::input_action(&action, selected) {
+                    history::Input::Edit(kind) => {
+                        self.record_edit(kind, |app| {
+                            if let Some(Doc::Source(content)) = &mut app.doc {
+                                content.perform(action);
+                            }
+                        });
+                    }
+                    history::Input::Moved => {
+                        self.history.close();
+                        if let Some(Doc::Source(content)) = &mut self.doc {
+                            content.perform(action);
+                        }
+                    }
+                    history::Input::Ignore => {
+                        if let Some(Doc::Source(content)) = &mut self.doc {
+                            content.perform(action);
+                        }
+                    }
                 }
                 Task::none()
             }
             Message::Live(msg) => {
-                let Some(Doc::Live(live)) = &mut self.doc else {
-                    return Task::none();
+                let selected = matches!(&self.doc, Some(Doc::Live(live)) if live.has_selection());
+                let input = live_input(&msg, selected);
+                let (task, outcome) = match input {
+                    history::Input::Edit(kind) => self.record_edit(kind, |app| {
+                        let Some(Doc::Live(live)) = &mut app.doc else {
+                            return (Task::none(), live::Outcome::None);
+                        };
+                        live.update(msg)
+                    }),
+                    history::Input::Moved => {
+                        self.history.close();
+                        self.update_live(msg)
+                    }
+                    history::Input::Ignore => self.update_live(msg),
                 };
-                let (task, outcome) = live.update(msg);
                 let task = task.map(Message::Live);
                 match outcome {
                     live::Outcome::None => task,
                     live::Outcome::Changed => {
-                        self.dirty = true;
+                        self.sync_dirty();
                         task
                     }
                     live::Outcome::Save => {
@@ -212,6 +256,8 @@ impl App {
                     }
                     live::Outcome::ToggleMode => self.toggle_mode(),
                     live::Outcome::Link(url) => Task::batch([task, self.open_link(&url)]),
+                    live::Outcome::Undo => self.undo(),
+                    live::Outcome::Redo => self.redo(),
                 }
             }
             Message::ToggleMode => self.toggle_mode(),
@@ -225,6 +271,8 @@ impl App {
                 self.save();
                 Task::none()
             }
+            Message::Undo => self.undo(),
+            Message::Redo => self.redo(),
             Message::NewNameChanged(name) => {
                 self.new_name = name;
                 Task::none()
@@ -249,12 +297,8 @@ impl App {
         // Pointer events let live preview extend a selection past the active line.
         Subscription::batch([
             keyboard::listen().filter_map(|event| match event {
-                keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => {
-                    match key.as_ref() {
-                        Key::Character("s") => Some(Message::Save),
-                        Key::Character("e") => Some(Message::ToggleMode),
-                        _ => None,
-                    }
+                keyboard::Event::KeyPressed { key, modifiers, .. } => {
+                    view::shortcut(key.as_ref(), modifiers)
                 }
                 _ => None,
             }),
@@ -275,6 +319,18 @@ const LABEL: Font = Font {
     weight: Weight::Semibold,
     ..Font::DEFAULT
 };
+
+fn live_input(msg: &live::Msg, selected: bool) -> history::Input {
+    match msg {
+        live::Msg::Edit(action) => history::input_action(action, selected),
+        // Joining a line is the backspace/delete that crossed a segment.
+        live::Msg::MergeUp => history::Input::Edit(history::EditKind::Backspace),
+        live::Msg::MergeDown => history::Input::Edit(history::EditKind::Delete),
+        live::Msg::ToggleTask(_) => history::Input::Edit(history::EditKind::Other),
+        live::Msg::Nav(_) | live::Msg::Activate(_) | live::Msg::DragEnd => history::Input::Moved,
+        _ => history::Input::Ignore,
+    }
+}
 
 fn live_pointer(
     event: Event,

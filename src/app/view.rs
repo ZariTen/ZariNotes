@@ -188,17 +188,31 @@ impl App {
     }
 }
 
-/// Ctrl+S saves, Ctrl+E toggles live preview, Tab inserts spaces.
+/// Ctrl+S saves, Ctrl+Z undoes, Ctrl+Shift+Z / Ctrl+Y redoes, Ctrl+E toggles
+/// live preview, Tab inserts spaces.
 fn editor_bindings(kp: KeyPress) -> Option<Binding<Message>> {
-    if kp.modifiers.command() {
-        match kp.key.as_ref() {
-            Key::Character("s") => return Some(Binding::Custom(Message::Save)),
-            Key::Character("e") => return Some(Binding::Custom(Message::ToggleMode)),
-            _ => {}
-        }
+    if let Some(message) = shortcut(kp.key.as_ref(), kp.modifiers) {
+        return Some(Binding::Custom(message));
     }
     if matches!(kp.key, Key::Named(keyboard::key::Named::Tab)) && kp.modifiers.is_empty() {
         return Some(Binding::Sequence(vec![Binding::Insert(' '); 4]));
     }
     Binding::from_key_press(kp)
+}
+
+pub(super) fn shortcut(
+    key: iced::keyboard::Key<&str>,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<Message> {
+    if !modifiers.command() {
+        return None;
+    }
+    match key {
+        Key::Character("s") => Some(Message::Save),
+        Key::Character("e") => Some(Message::ToggleMode),
+        Key::Character("z" | "Z") if modifiers.shift() => Some(Message::Redo),
+        Key::Character("y" | "Y") if !modifiers.shift() => Some(Message::Redo),
+        Key::Character("z" | "Z") => Some(Message::Undo),
+        _ => None,
+    }
 }

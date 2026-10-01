@@ -19,6 +19,7 @@ A minimal Markdown notes app written in Rust with [iced](https://iced.rs).
   Markdown highlighting for the whole note
 - `Ctrl+S` to save; the footer shows Unsaved until you do. Unsaved changes are also
   auto-saved when switching notes or workspaces
+- `Ctrl+Z` undoes the last change (`Ctrl+Shift+Z` or `Ctrl+Y` redoes). A run of typing is one step, in Live and in Source
 - Footer shows the open note, word count, and cursor position. A `•` in the window title means unsaved changes
 - Light / Dark switch in the footer (remembered). Light is Retro Classic (vintage beige and slate); dark is Dolch Noir
 
