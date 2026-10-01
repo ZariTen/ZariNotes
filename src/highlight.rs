@@ -18,6 +18,11 @@ pub struct Settings {
 
 type Spans = Vec<(Range<usize>, Kind)>;
 
+struct Found {
+    end: usize,
+    spans: Spans,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
     Marker,
@@ -136,67 +141,111 @@ pub fn to_format(h: &Highlight, theme: &Theme) -> Format<Font> {
 /// Compute highlight spans for one line. Returns the spans and whether the
 /// following line starts inside a fenced code block.
 pub fn spans(line: &str, fenced: bool) -> (Vec<(Range<usize>, Kind)>, bool) {
-    let mut out = Vec::new();
-    let trimmed = line.trim_start();
-    let indent = line.len() - trimmed.len();
-
-    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-        out.push((0..line.len(), Kind::Marker));
-        return (out, !fenced);
+    // A closing fence is still a fence, so this runs before the inside-fence check.
+    if let Some(done) = fence_line(line, fenced) {
+        return done;
     }
     if fenced {
-        out.push((0..line.len(), Kind::CodeLine));
-        return (out, true);
+        return code_line(line);
+    }
+    if let Some(done) = horizontal_rule(line) {
+        return done;
+    }
+    if let Some(done) = heading(line) {
+        return done;
     }
 
-    // Horizontal rule.
-    let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
-    if compact.len() >= 3
-        && (compact.chars().all(|c| c == '-')
-            || compact.chars().all(|c| c == '*')
-            || compact.chars().all(|c| c == '_'))
-    {
-        out.push((0..line.len(), Kind::Marker));
-        return (out, false);
-    }
-
-    // Heading.
-    let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
-    if (1..=6).contains(&hashes) && trimmed[hashes..].is_empty()
-        || (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ')
-    {
-        let marker_end = indent + hashes + usize::from(trimmed.len() > hashes);
-        out.push((0..marker_end, Kind::Marker));
-        inline(line, marker_end, Some(Kind::Heading), &mut out);
-        return (out, false);
-    }
-
-    let mut pos = indent;
-    let mut fill = None;
-
-    // Block quotes (possibly nested).
-    while line[pos..].starts_with('>') {
-        let end = pos + 1 + usize::from(line[pos + 1..].starts_with(' '));
-        out.push((pos..end, Kind::Marker));
-        pos = end;
-        fill = Some(Kind::Quote);
-    }
-
-    // List marker, optionally followed by a task box.
-    if let Some(len) = list_marker(&line[pos..]) {
-        out.push((pos..pos + len, Kind::Marker));
-        pos += len;
-        for task in ["[ ] ", "[x] ", "[X] "] {
-            if line[pos..].starts_with(task) {
-                out.push((pos..pos + task.len(), Kind::Marker));
-                pos += task.len();
-                break;
-            }
-        }
-    }
-
+    let mut out = Vec::new();
+    let mut pos = indent_len(line);
+    let fill = block_quote(line, &mut pos, &mut out);
+    list_item(line, &mut pos, &mut out);
     inline(line, pos, fill, &mut out);
     (out, false)
+}
+
+fn fence_line(line: &str, fenced: bool) -> Option<(Spans, bool)> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        Some((vec![(0..line.len(), Kind::Marker)], !fenced))
+    } else {
+        None
+    }
+}
+
+fn code_line(line: &str) -> (Spans, bool) {
+    (vec![(0..line.len(), Kind::CodeLine)], true)
+}
+
+fn horizontal_rule(line: &str) -> Option<(Spans, bool)> {
+    let compact: String = line
+        .trim_start()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if compact.len() < 3 {
+        return None;
+    }
+    let marker = compact.chars().next()?;
+    if marker != '-' && marker != '*' && marker != '_' {
+        return None;
+    }
+    if compact.chars().all(|c| c == marker) {
+        Some((vec![(0..line.len(), Kind::Marker)], false))
+    } else {
+        None
+    }
+}
+
+fn heading(line: &str) -> Option<(Spans, bool)> {
+    let trimmed = line.trim_start();
+    let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let rest = &trimmed[hashes..];
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return None;
+    }
+    let marker_end = indent_len(line) + hashes + usize::from(!rest.is_empty());
+    let mut out = Vec::new();
+    out.push((0..marker_end, Kind::Marker));
+    inline(line, marker_end, Some(Kind::Heading), &mut out);
+    Some((out, false))
+}
+
+fn block_quote(line: &str, pos: &mut usize, out: &mut Spans) -> Option<Kind> {
+    let mut fill = None;
+    while line[*pos..].starts_with('>') {
+        let end = *pos + 1 + usize::from(line[*pos + 1..].starts_with(' '));
+        out.push((*pos..end, Kind::Marker));
+        *pos = end;
+        fill = Some(Kind::Quote);
+    }
+    fill
+}
+
+fn list_item(line: &str, pos: &mut usize, out: &mut Spans) {
+    let Some(len) = list_marker(&line[*pos..]) else {
+        return;
+    };
+    out.push((*pos..*pos + len, Kind::Marker));
+    *pos += len;
+    let Some(task_len) = task_box(&line[*pos..]) else {
+        return;
+    };
+    out.push((*pos..*pos + task_len, Kind::Marker));
+    *pos += task_len;
+}
+
+fn task_box(s: &str) -> Option<usize> {
+    ["[ ] ", "[x] ", "[X] "]
+        .into_iter()
+        .find(|task| s.starts_with(task))
+        .map(|task| task.len())
+}
+
+fn indent_len(line: &str) -> usize {
+    line.len() - line.trim_start().len()
 }
 
 /// Length of a list marker (`- `, `* `, `+ `, `12. `, `3) `) at the start of `s`.
@@ -231,75 +280,137 @@ fn inline(line: &str, start: usize, fill: Option<Kind>, out: &mut Vec<(Range<usi
     };
 
     while i < b.len() {
-        let rest = &line[i..];
-        let found: Option<(usize, Spans)> = if let Some(after) = rest.strip_prefix('`') {
-            after.find('`').map(|j| {
-                let end = i + 1 + j + 1;
-                (
-                    end,
-                    vec![
-                        (i..i + 1, Kind::Marker),
-                        (i + 1..end - 1, Kind::Code),
-                        (end - 1..end, Kind::Marker),
-                    ],
-                )
-            })
-        } else if rest.starts_with("**") || rest.starts_with("__") {
-            delimited(line, i, &rest[..2], Kind::Bold)
-        } else if rest.starts_with("~~") {
-            delimited(line, i, "~~", Kind::Strike)
-        } else if rest.starts_with("==") {
-            delimited(line, i, "==", Kind::Link)
-        } else if (rest.starts_with('*') || rest.starts_with('_'))
-            && !(rest.starts_with('_') && i > 0 && b[i - 1].is_ascii_alphanumeric())
-        {
-            delimited(line, i, &rest[..1], Kind::Italic)
-        } else if rest.starts_with("[[") {
-            rest.find("]]").map(|j| {
-                let end = i + j + 2;
-                (
-                    end,
-                    vec![
-                        (i..i + 2, Kind::Marker),
-                        (i + 2..end - 2, Kind::Link),
-                        (end - 2..end, Kind::Marker),
-                    ],
-                )
-            })
-        } else if rest.starts_with('[') || rest.starts_with("![") {
-            let open = i + usize::from(rest.starts_with('!'));
-            line[open..].find("](").and_then(|j| {
-                let close_text = open + j;
-                line[close_text..].find(')').map(|k| {
-                    let end = close_text + k + 1;
-                    (
-                        end,
-                        vec![
-                            (i..open + 1, Kind::Marker),
-                            (open + 1..close_text, Kind::Link),
-                            (close_text..end, Kind::Marker),
-                        ],
-                    )
-                })
-            })
+        if let Some(found) = first_syntax(line, i) {
+            flush(out, gap, i);
+            out.extend(found.spans);
+            i = found.end;
+            gap = found.end;
         } else {
-            None
-        };
-
-        match found {
-            Some((end, spans)) => {
-                flush(out, gap, i);
-                out.extend(spans);
-                i = end;
-                gap = end;
-            }
-            None => i += rest.chars().next().map_or(1, char::len_utf8),
+            // One character, not one byte. A multibyte char must not be split.
+            let step = line[i..].chars().next().map_or(1, char::len_utf8);
+            i += step;
         }
     }
     flush(out, gap, b.len());
 }
 
-fn delimited(line: &str, i: usize, delim: &str, kind: Kind) -> Option<(usize, Spans)> {
+/// Order matters. `**` must be tried before `*`, and `[[` before `[`,
+/// or the shorter marker would win.
+fn first_syntax(line: &str, at: usize) -> Option<Found> {
+    if let Some(found) = inline_code(line, at) {
+        return Some(found);
+    }
+    if let Some(found) = bold(line, at) {
+        return Some(found);
+    }
+    if let Some(found) = strike(line, at) {
+        return Some(found);
+    }
+    if let Some(found) = double_equals(line, at) {
+        return Some(found);
+    }
+    if let Some(found) = italic(line, at) {
+        return Some(found);
+    }
+    if let Some(found) = wiki_link(line, at) {
+        return Some(found);
+    }
+    markdown_link(line, at)
+}
+
+/// `` `code` `` with a closing tick on this line.
+fn inline_code(line: &str, at: usize) -> Option<Found> {
+    let after_open = line[at..].strip_prefix('`')?;
+    let inner_len = after_open.find('`')?;
+    let inner_start = at + 1;
+    let inner_end = inner_start + inner_len;
+    let end = inner_end + 1;
+    Some(marked(at, inner_start..inner_end, end, Kind::Code))
+}
+
+/// `**bold**` or `__bold__`.
+fn bold(line: &str, at: usize) -> Option<Found> {
+    let rest = &line[at..];
+    let delim = if rest.starts_with("**") {
+        "**"
+    } else if rest.starts_with("__") {
+        "__"
+    } else {
+        return None;
+    };
+    delimited(line, at, delim, Kind::Bold)
+}
+
+/// `~~strike~~`.
+fn strike(line: &str, at: usize) -> Option<Found> {
+    if line[at..].starts_with("~~") {
+        delimited(line, at, "~~", Kind::Strike)
+    } else {
+        None
+    }
+}
+
+/// `==marked==`. This is painted as a link, same as before.
+fn double_equals(line: &str, at: usize) -> Option<Found> {
+    if line[at..].starts_with("==") {
+        delimited(line, at, "==", Kind::Link)
+    } else {
+        None
+    }
+}
+
+/// `*italic*` or `_italic_`. An underscore after a letter is a name, not emphasis.
+fn italic(line: &str, at: usize) -> Option<Found> {
+    let rest = &line[at..];
+    let star = rest.starts_with('*');
+    let underscore = rest.starts_with('_');
+    if !star && !underscore {
+        return None;
+    }
+    if underscore && at > 0 && line.as_bytes()[at - 1].is_ascii_alphanumeric() {
+        return None;
+    }
+    delimited(line, at, &rest[..1], Kind::Italic)
+}
+
+/// `[[note]]`.
+fn wiki_link(line: &str, at: usize) -> Option<Found> {
+    let rest = &line[at..];
+    if !rest.starts_with("[[") {
+        return None;
+    }
+    let close = rest.find("]]")?;
+    let inner_start = at + 2;
+    let inner_end = at + close;
+    let end = inner_end + 2;
+    Some(marked(at, inner_start..inner_end, end, Kind::Link))
+}
+
+/// `[text](url)` or `![alt](url)`.
+fn markdown_link(line: &str, at: usize) -> Option<Found> {
+    let rest = &line[at..];
+    let image = rest.starts_with("![");
+    if !image && !rest.starts_with('[') {
+        return None;
+    }
+    let open = at + usize::from(image);
+    let text_end = open + line[open..].find("](")?;
+    let end = text_end + line[text_end..].find(')')? + 1;
+    Some(marked(at, open + 1..text_end, end, Kind::Link))
+}
+
+fn marked(start: usize, inner: Range<usize>, end: usize, kind: Kind) -> Found {
+    Found {
+        end,
+        spans: vec![
+            (start..inner.start, Kind::Marker),
+            (inner.start..inner.end, kind),
+            (inner.end..end, Kind::Marker),
+        ],
+    }
+}
+
+fn delimited(line: &str, i: usize, delim: &str, kind: Kind) -> Option<Found> {
     let d = delim.len();
     let inner_start = i + d;
     // Opening delimiter must be followed by non-space content.
@@ -311,14 +422,7 @@ fn delimited(line: &str, i: usize, delim: &str, kind: Kind) -> Option<(usize, Sp
         return None;
     }
     let inner_end = inner_start + j;
-    Some((
-        inner_end + d,
-        vec![
-            (i..inner_start, Kind::Marker),
-            (inner_start..inner_end, kind),
-            (inner_end..inner_end + d, Kind::Marker),
-        ],
-    ))
+    Some(marked(i, inner_start..inner_end, inner_end + d, kind))
 }
 
 #[cfg(test)]
