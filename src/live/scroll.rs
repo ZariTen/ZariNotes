@@ -26,10 +26,8 @@ impl Live {
     }
 }
 
-// ── scrolling ─────────────────────────────────────────────────────
-
-/// Finds the live editor and the document scrollable, and computes the
-/// scroll offset needed to bring the cursor line into view (if any).
+/// Finds the live editor and the document scrollable, then reports the scroll
+/// offset that brings the cursor line into view.
 struct ScrollIntoView {
     cursor_offset: f32,
     editor: Option<Rectangle>,
@@ -71,15 +69,23 @@ impl Operation<f32> for ScrollIntoView {
             return operation::Outcome::None;
         };
         let top = editor.y - content.y + self.cursor_offset;
-        let bottom = top + LINE_HEIGHT;
-        let margin = LINE_HEIGHT * 2.0;
-
-        if top - margin < translation.y {
-            operation::Outcome::Some((top - margin).max(0.0))
-        } else if bottom + margin > translation.y + viewport.height {
-            operation::Outcome::Some(bottom + margin - viewport.height)
-        } else {
-            operation::Outcome::None
+        match scroll_target(top, translation.y, viewport.height) {
+            Some(y) => operation::Outcome::Some(y),
+            None => operation::Outcome::None,
         }
     }
+}
+
+/// Scroll offset that keeps the cursor line, plus two lines of margin, inside
+/// the viewport. `None` means it is already visible.
+fn scroll_target(top: f32, current_y: f32, viewport_height: f32) -> Option<f32> {
+    let bottom = top + LINE_HEIGHT;
+    let margin = LINE_HEIGHT * 2.0;
+    if top - margin < current_y {
+        return Some((top - margin).max(0.0));
+    }
+    if bottom + margin > current_y + viewport_height {
+        return Some(bottom + margin - viewport_height);
+    }
+    None
 }

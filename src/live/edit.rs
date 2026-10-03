@@ -3,58 +3,27 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use iced::Task;
 use iced::widget::markdown;
 use iced::widget::text_editor::{Action, Cursor, Motion, Position};
+use iced::{Point, Task};
 
-use super::split::{estimate_column, floor_char_boundary, split};
+use super::split::{estimate_column, estimate_raw_column, floor_char_boundary, split};
 use super::{Kind, LINE_HEIGHT, Live, Msg, Nav, Segment, TEXT_SIZE};
 
 impl Live {
-    // ── model ────────────────────────────────────────────────────
-
     /// Re-split `lines` into segments, reusing parsed Markdown where the source is unchanged.
     pub(super) fn rebuild(&mut self) {
-        let mut cache: HashMap<String, Vec<markdown::Item>> = self
-            .segments
-            .drain(..)
-            .map(|s| (s.source, s.items))
-            .collect();
-
+        let mut cache = take_parsed(&mut self.segments);
         self.segments = split(&self.lines)
             .into_iter()
-            .map(|(range, kind)| {
-                let first = &self.lines[range.start];
-                let indent = first
-                    .chars()
-                    .take_while(|c| c.is_whitespace())
-                    .map(|c| if c == '\t' { 4 } else { 1 })
-                    .sum();
-                let source = match kind {
-                    Kind::Markdown => first.trim_start().to_owned(),
-                    _ => self.lines[range.clone()].join("\n"),
-                };
-                let items = match kind {
-                    Kind::Blank | Kind::FrontMatter => Vec::new(),
-                    _ => cache
-                        .remove(&source)
-                        .unwrap_or_else(|| markdown::parse(&source).collect()),
-                };
-                Segment {
-                    lines: range,
-                    kind,
-                    indent: if kind == Kind::Markdown { indent } else { 0 },
-                    source,
-                    items,
-                }
-            })
+            .map(|(range, kind)| make_segment(&self.lines, range, kind, &mut cache))
             .collect();
         self.active = self.active.min(self.segments.len() - 1);
     }
 
     pub(super) fn segment_at(&self, line: usize) -> usize {
         self.segments
-            .partition_point(|s| s.lines.end <= line)
+            .partition_point(|seg| seg.lines.end <= line)
             .min(self.segments.len() - 1)
     }
 
@@ -90,35 +59,37 @@ impl Live {
             // Same segment, editor already holds exactly its text.
             self.active = idx;
             self.editor_lines = range;
-            self.scroll_into_view()
-        } else {
-            self.set_cursor(cursor)
+            return self.scroll_into_view();
         }
+        self.set_cursor(cursor)
     }
 
     pub(super) fn navigate(&mut self, nav: Nav) -> Task<Msg> {
-        let Range { start, end } = self.segments[self.active].lines;
-        let col = self.editor.cursor().position.column;
-        let target = match nav {
-            Nav::Up if start > 0 => Position {
-                line: start - 1,
-                column: col,
-            },
-            Nav::Down if end < self.lines.len() => Position {
-                line: end,
-                column: col,
-            },
-            Nav::Left if start > 0 => Position {
-                line: start - 1,
-                column: self.lines[start - 1].len(),
-            },
-            Nav::Right if end < self.lines.len() => Position {
-                line: end,
-                column: 0,
-            },
-            _ => return Task::none(),
+        let Some(target) = self.nav_target(nav) else {
+            return Task::none();
         };
         self.set_cursor(target)
+    }
+
+    fn nav_target(&self, nav: Nav) -> Option<Position> {
+        let Range { start, end } = self.segments[self.active].lines;
+        let column = self.editor.cursor().position.column;
+        match nav {
+            Nav::Up if start > 0 => Some(Position {
+                line: start - 1,
+                column,
+            }),
+            Nav::Down if end < self.lines.len() => Some(Position { line: end, column }),
+            Nav::Left if start > 0 => Some(Position {
+                line: start - 1,
+                column: self.lines[start - 1].len(),
+            }),
+            Nav::Right if end < self.lines.len() => Some(Position {
+                line: end,
+                column: 0,
+            }),
+            _ => None,
+        }
     }
 
     /// A select-all or a select-motion that would leave the editor buffer.
@@ -134,25 +105,41 @@ impl Live {
     }
 
     fn selection_leaves(&self, motion: Motion) -> bool {
-        let c = self.editor.cursor().position;
-        let range = &self.editor_lines;
-        if range.is_empty() {
+        let Some(edge) = self.editor_edge() else {
             return false;
-        }
-        let at_top = c.line == 0;
-        let at_bottom = c.line + 1 >= range.len();
-        let line_len = self.editor.line(c.line).map(|l| l.text.len()).unwrap_or(0);
-        let at_start = at_top && c.column == 0;
-        let at_end = at_bottom && c.column >= line_len;
+        };
         match motion {
-            Motion::Up => at_top && range.start > 0,
-            Motion::Down => at_bottom && range.end < self.lines.len(),
-            Motion::Left | Motion::WordLeft => at_start && range.start > 0,
-            Motion::Right | Motion::WordRight => at_end && range.end < self.lines.len(),
-            Motion::PageUp | Motion::DocumentStart => range.start > 0,
-            Motion::PageDown | Motion::DocumentEnd => range.end < self.lines.len(),
+            Motion::Up => edge.at_top && edge.range_start > 0,
+            Motion::Down => edge.at_bottom && edge.range_end < self.lines.len(),
+            Motion::Left | Motion::WordLeft => edge.at_start && edge.range_start > 0,
+            Motion::Right | Motion::WordRight => edge.at_end && edge.range_end < self.lines.len(),
+            Motion::PageUp | Motion::DocumentStart => edge.range_start > 0,
+            Motion::PageDown | Motion::DocumentEnd => edge.range_end < self.lines.len(),
             Motion::Home | Motion::End => false,
         }
+    }
+
+    fn editor_edge(&self) -> Option<EditorEdge> {
+        let caret = self.editor.cursor().position;
+        let range = &self.editor_lines;
+        if range.is_empty() {
+            return None;
+        }
+        let at_top = caret.line == 0;
+        let at_bottom = caret.line + 1 >= range.len();
+        let line_len = self
+            .editor
+            .line(caret.line)
+            .map(|l| l.text.len())
+            .unwrap_or(0);
+        Some(EditorEdge {
+            at_top,
+            at_bottom,
+            at_start: at_top && caret.column == 0,
+            at_end: at_bottom && caret.column >= line_len,
+            range_start: range.start,
+            range_end: range.end,
+        })
     }
 
     fn extend_by(&mut self, motion: Motion) -> Task<Msg> {
@@ -181,35 +168,38 @@ impl Live {
     fn motion_target(&self, motion: Motion) -> Position {
         let cur = self.cursor();
         let last = self.lines.len() - 1;
-        let on = |line: usize, column: usize| Position {
-            line,
-            column: floor_char_boundary(&self.lines[line], column.min(self.lines[line].len())),
-        };
         match motion {
-            Motion::Up => on(cur.line.saturating_sub(1), cur.column),
-            Motion::Down => on((cur.line + 1).min(last), cur.column),
+            Motion::Up => self.place(cur.line.saturating_sub(1), cur.column),
+            Motion::Down => self.place((cur.line + 1).min(last), cur.column),
             Motion::Left | Motion::WordLeft | Motion::Home => {
                 if cur.line == 0 {
-                    on(0, 0)
+                    self.place(0, 0)
                 } else {
-                    on(cur.line - 1, self.lines[cur.line - 1].len())
+                    self.place(cur.line - 1, self.lines[cur.line - 1].len())
                 }
             }
             Motion::Right | Motion::WordRight | Motion::End => {
                 if cur.line >= last {
-                    on(last, self.lines[last].len())
+                    self.place(last, self.lines[last].len())
                 } else {
-                    on(cur.line + 1, 0)
+                    self.place(cur.line + 1, 0)
                 }
             }
-            Motion::PageUp | Motion::DocumentStart => on(0, 0),
-            Motion::PageDown | Motion::DocumentEnd => on(last, self.lines[last].len()),
+            Motion::PageUp | Motion::DocumentStart => self.place(0, 0),
+            Motion::PageDown | Motion::DocumentEnd => self.place(last, self.lines[last].len()),
+        }
+    }
+
+    fn place(&self, line: usize, column: usize) -> Position {
+        Position {
+            line,
+            column: floor_char_boundary(&self.lines[line], column.min(self.lines[line].len())),
         }
     }
 
     pub(super) fn selection_anchor(&self) -> Position {
-        let c = self.editor.cursor();
-        let local = c.selection.unwrap_or(c.position);
+        let caret = self.editor.cursor();
+        let local = caret.selection.unwrap_or(caret.position);
         Position {
             line: self.editor_lines.start + local.line,
             column: local.column,
@@ -223,24 +213,32 @@ impl Live {
         if anchor == head {
             return self.set_cursor(head);
         }
+        let range = self.covered_lines(anchor, head);
+        self.load_editor(
+            range.clone(),
+            Cursor {
+                position: self.to_local(range.start, head),
+                selection: Some(self.to_local(range.start, anchor)),
+            },
+        )
+    }
+
+    fn covered_lines(&self, anchor: Position, head: Position) -> Range<usize> {
         let lo = anchor.line.min(head.line);
         let hi = anchor.line.max(head.line);
         let start = self.segments[self.segment_at(lo)].lines.start;
         let end = self.segments[self.segment_at(hi)].lines.end;
-        let local = |p: Position| Position {
-            line: p.line - start,
+        start..end
+    }
+
+    fn to_local(&self, start: usize, pos: Position) -> Position {
+        Position {
+            line: pos.line - start,
             column: floor_char_boundary(
-                &self.lines[p.line],
-                p.column.min(self.lines[p.line].len()),
+                &self.lines[pos.line],
+                pos.column.min(self.lines[pos.line].len()),
             ),
-        };
-        self.load_editor(
-            start..end,
-            Cursor {
-                position: local(head),
-                selection: Some(local(anchor)),
-            },
-        )
+        }
     }
 
     fn load_editor(&mut self, range: Range<usize>, cursor: Cursor) -> Task<Msg> {
@@ -282,45 +280,150 @@ impl Live {
     }
 
     /// Best-effort mapping from a click on rendered Markdown to a source position.
-    pub(super) fn click_position(&self, i: usize) -> Position {
-        let seg = &self.segments[i];
-        let Range { start, end } = seg.lines.clone();
-        let Some(p) = self.hover.filter(|(h, _)| *h == i).map(|(_, p)| p) else {
-            return Position {
-                line: start,
-                column: self.lines[start].len(),
-            };
+    pub(super) fn click_position(&self, index: usize) -> Position {
+        let seg = &self.segments[index];
+        let start = seg.lines.start;
+        let Some(point) = self.hover_on(index) else {
+            return end_of_line(&self.lines, start);
         };
-
-        let line = match seg.kind {
-            Kind::Blank => {
-                return Position {
-                    line: start,
-                    column: 0,
-                };
-            }
-            Kind::Markdown => {
-                let x = p.x - seg.indent as f32 * TEXT_SIZE * 0.5;
-                return Position {
-                    line: start,
-                    column: estimate_column(&self.lines[start], x),
-                };
-            }
-            Kind::Fence => {
-                let row_h = TEXT_SIZE * 0.875 * 1.3;
-                let k = ((p.y - TEXT_SIZE * 1.1).max(0.0) / row_h) as usize;
-                (start + 1 + k).min(end.saturating_sub(2).max(start))
-            }
-            Kind::Table => {
-                let k = (p.y / (LINE_HEIGHT + 10.0)) as usize;
-                if k == 0 { start } else { start + 1 + k }
-            }
-            Kind::FrontMatter => start + (p.y / (TEXT_SIZE * 0.8 * 1.3)) as usize,
-        };
-        let line = line.min(end - 1);
-        Position {
-            line,
-            column: self.lines[line].len(),
+        if let Some(pos) = blank_click(seg) {
+            return pos;
         }
+        if let Some(pos) = markdown_click(seg, &self.lines[start], point) {
+            return pos;
+        }
+        let line = block_line(seg, point.y);
+        end_of_line(&self.lines, line)
     }
+
+    fn hover_on(&self, index: usize) -> Option<Point> {
+        self.hover
+            .filter(|(hit, _)| *hit == index)
+            .map(|(_, point)| point)
+    }
+
+    pub(super) fn point_in_editor(&self, point: Point) -> Position {
+        let last_local = self.editor_lines.len().saturating_sub(1);
+        let local = ((point.y / LINE_HEIGHT) as usize).min(last_local);
+        let line = (self.editor_lines.start + local).min(self.lines.len() - 1);
+        let column = estimate_raw_column(&self.lines[line], point.x);
+        Position { line, column }
+    }
+}
+
+struct EditorEdge {
+    at_top: bool,
+    at_bottom: bool,
+    at_start: bool,
+    at_end: bool,
+    range_start: usize,
+    range_end: usize,
+}
+
+fn take_parsed(segments: &mut Vec<Segment>) -> HashMap<String, Vec<markdown::Item>> {
+    segments
+        .drain(..)
+        .map(|seg| (seg.source, seg.items))
+        .collect()
+}
+
+fn make_segment(
+    lines: &[String],
+    range: Range<usize>,
+    kind: Kind,
+    cache: &mut HashMap<String, Vec<markdown::Item>>,
+) -> Segment {
+    let first = &lines[range.start];
+    let indent = indent_columns(first);
+    let source = segment_source(lines, &range, kind);
+    let items = cached_items(kind, &source, cache);
+    Segment {
+        lines: range,
+        kind,
+        indent: if kind == Kind::Markdown { indent } else { 0 },
+        source,
+        items,
+    }
+}
+
+fn indent_columns(line: &str) -> usize {
+    line.chars()
+        .take_while(|c| c.is_whitespace())
+        .map(|c| if c == '\t' { 4 } else { 1 })
+        .sum()
+}
+
+fn segment_source(lines: &[String], range: &Range<usize>, kind: Kind) -> String {
+    if kind == Kind::Markdown {
+        return lines[range.start].trim_start().to_owned();
+    }
+    lines[range.clone()].join("\n")
+}
+
+fn cached_items(
+    kind: Kind,
+    source: &str,
+    cache: &mut HashMap<String, Vec<markdown::Item>>,
+) -> Vec<markdown::Item> {
+    if kind == Kind::Blank || kind == Kind::FrontMatter {
+        return Vec::new();
+    }
+    cache
+        .remove(source)
+        .unwrap_or_else(|| markdown::parse(source).collect())
+}
+
+fn end_of_line(lines: &[String], line: usize) -> Position {
+    Position {
+        line,
+        column: lines[line].len(),
+    }
+}
+
+fn blank_click(seg: &Segment) -> Option<Position> {
+    if seg.kind != Kind::Blank {
+        return None;
+    }
+    Some(Position {
+        line: seg.lines.start,
+        column: 0,
+    })
+}
+
+fn markdown_click(seg: &Segment, line: &str, point: Point) -> Option<Position> {
+    if seg.kind != Kind::Markdown {
+        return None;
+    }
+    let x = point.x - seg.indent as f32 * TEXT_SIZE * 0.5;
+    Some(Position {
+        line: seg.lines.start,
+        column: estimate_column(line, x),
+    })
+}
+
+fn block_line(seg: &Segment, y: f32) -> usize {
+    let start = seg.lines.start;
+    let end = seg.lines.end;
+    let line = match seg.kind {
+        Kind::Fence => fence_line(start, end, y),
+        Kind::Table => table_line(start, y),
+        Kind::FrontMatter => front_matter_line(start, y),
+        _ => start,
+    };
+    line.min(end - 1)
+}
+
+fn fence_line(start: usize, end: usize, y: f32) -> usize {
+    let row_h = TEXT_SIZE * 0.875 * 1.3;
+    let row = ((y - TEXT_SIZE * 1.1).max(0.0) / row_h) as usize;
+    (start + 1 + row).min(end.saturating_sub(2).max(start))
+}
+
+fn table_line(start: usize, y: f32) -> usize {
+    let row = (y / (LINE_HEIGHT + 10.0)) as usize;
+    if row == 0 { start } else { start + 1 + row }
+}
+
+fn front_matter_line(start: usize, y: f32) -> usize {
+    start + (y / (TEXT_SIZE * 0.8 * 1.3)) as usize
 }

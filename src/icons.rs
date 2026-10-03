@@ -52,30 +52,45 @@ fn ink(alpha: f32) -> impl Fn(&Theme) -> Color {
 
 /// Folder icon in the theme's accent color.
 pub fn folder<'a>(open: bool) -> Svg<'a> {
-    let handle = if open { &*FOLDER_OPEN_H } else { &*FOLDER_H };
-    icon(handle, 16.0, |t| t.extended_palette().primary.base.color)
+    icon(folder_handle(open), 16.0, accent)
 }
 
 /// Note icon; accent-tinted when the row is the open note.
 pub fn file<'a>(selected: bool) -> Svg<'a> {
-    icon(&FILE_H, 16.0, move |t| {
-        let palette = t.extended_palette();
-        if selected {
-            palette.primary.base.color
-        } else {
-            palette.background.base.text.scale_alpha(0.8)
-        }
-    })
+    icon(&FILE_H, 16.0, move |theme| file_color(selected, theme))
 }
 
 /// Disclosure chevron. Brighter when the folder is expanded.
 pub fn chevron<'a>(open: bool) -> Svg<'a> {
-    let handle = if open {
-        &*CHEVRON_DOWN_H
+    icon(chevron_handle(open), 14.0, ink(chevron_alpha(open)))
+}
+
+fn folder_handle(open: bool) -> &'static svg::Handle {
+    if open { &FOLDER_OPEN_H } else { &FOLDER_H }
+}
+
+fn chevron_handle(open: bool) -> &'static svg::Handle {
+    if open {
+        &CHEVRON_DOWN_H
     } else {
-        &*CHEVRON_RIGHT_H
-    };
-    icon(handle, 14.0, ink(if open { 0.85 } else { 0.5 }))
+        &CHEVRON_RIGHT_H
+    }
+}
+
+fn chevron_alpha(open: bool) -> f32 {
+    if open { 0.85 } else { 0.5 }
+}
+
+fn accent(theme: &Theme) -> Color {
+    theme.extended_palette().primary.base.color
+}
+
+fn file_color(selected: bool, theme: &Theme) -> Color {
+    let palette = theme.extended_palette();
+    if selected {
+        return palette.primary.base.color;
+    }
+    palette.background.base.text.scale_alpha(0.8)
 }
 
 /// Header action: pick a different workspace folder.

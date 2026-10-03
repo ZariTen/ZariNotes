@@ -22,10 +22,12 @@ impl Dir {
             if name.starts_with('.') {
                 continue;
             }
-            let Ok(ft) = entry.file_type() else { continue };
-            if ft.is_dir() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
                 dir.dirs.insert(name, Dir::scan(&entry.path()));
-            } else if ft.is_file() && name.ends_with(".md") {
+            } else if kind.is_file() && name.ends_with(".md") {
                 dir.files.insert(name);
             }
         }
@@ -34,17 +36,13 @@ impl Dir {
 
     /// Add a file at a workspace-relative path, creating intermediate folders.
     pub fn insert_file(&mut self, rel: &Path) {
-        let mut parts: Vec<String> = rel
-            .components()
-            .filter_map(|c| match c {
-                Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
-                _ => None,
-            })
-            .collect();
-        let Some(file) = parts.pop() else { return };
+        let mut names = normal_names(rel);
+        let Some(file) = names.pop() else {
+            return;
+        };
         let mut dir = self;
-        for part in parts {
-            dir = dir.dirs.entry(part).or_default();
+        for name in names {
+            dir = dir.dirs.entry(name).or_default();
         }
         dir.files.insert(file);
     }
@@ -74,11 +72,12 @@ impl Dir {
         if query.trim().is_empty() {
             return true;
         }
-        self.files.iter().any(|file| Self::file_hit(file, query))
-            || self
-                .dirs
-                .iter()
-                .any(|(name, sub)| Self::name_hit(name, query) || sub.contains_match(query))
+        if self.files.iter().any(|file| Self::file_hit(file, query)) {
+            return true;
+        }
+        self.dirs
+            .iter()
+            .any(|(name, sub)| Self::name_hit(name, query) || sub.contains_match(query))
     }
 
     /// Notes that a filtered tree would show.
@@ -95,14 +94,33 @@ impl Dir {
             .filter(|file| Self::file_hit(file, query))
             .count();
         for (name, sub) in &self.dirs {
-            if Self::name_hit(name, query) {
-                count += sub.file_count();
-            } else if sub.contains_match(query) {
-                count += sub.visible_file_count(query);
-            }
+            count += notes_shown_in(name, sub, query);
         }
         count
     }
+}
+
+fn normal_names(path: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    for part in path.components() {
+        if let Component::Normal(name) = part {
+            names.push(name.to_string_lossy().into_owned());
+        }
+    }
+    names
+}
+
+/// Notes a filtered tree shows under this folder.
+///
+/// A folder whose own name matches contributes every note inside it.
+fn notes_shown_in(name: &str, folder: &Dir, query: &str) -> usize {
+    if Dir::name_hit(name, query) {
+        return folder.file_count();
+    }
+    if folder.contains_match(query) {
+        return folder.visible_file_count(query);
+    }
+    0
 }
 
 #[cfg(test)]

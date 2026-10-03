@@ -92,50 +92,41 @@ impl highlighter::Highlighter for Highlighter {
     }
 }
 
-pub fn to_format(h: &Highlight, theme: &Theme) -> Format<Font> {
-    let base = if h.mono {
+pub fn to_format(highlight: &Highlight, theme: &Theme) -> Format<Font> {
+    let base = if highlight.mono {
         Font::MONOSPACE
     } else {
         Font::DEFAULT
     };
-    let p = theme.extended_palette();
-    let dim = p.background.base.text.scale_alpha(0.4);
+    let (color, font) = look_of(highlight.kind, base, theme);
+    Format { color, font }
+}
 
-    let (color, font): (Option<Color>, Option<Font>) = match h.kind {
-        Kind::Marker => (Some(dim), None),
-        Kind::Heading => (
-            None,
-            Some(Font {
-                weight: Weight::Bold,
-                ..base
-            }),
-        ),
-        Kind::Bold => (
-            None,
-            Some(Font {
-                weight: Weight::Bold,
-                ..base
-            }),
-        ),
-        Kind::Italic => (
-            None,
-            Some(Font {
-                style: Style::Italic,
-                ..base
-            }),
-        ),
+fn look_of(kind: Kind, base: Font, theme: &Theme) -> (Option<Color>, Option<Font>) {
+    let ink = theme.extended_palette().background.base.text;
+    match kind {
+        Kind::Marker => (Some(ink.scale_alpha(0.4)), None),
+        Kind::Heading | Kind::Bold => (None, Some(bold_font(base))),
+        Kind::Italic => (None, Some(italic_font(base))),
         Kind::Code | Kind::CodeLine => (Some(theme.palette().success), Some(Font::MONOSPACE)),
         Kind::Link => (Some(theme.palette().primary), None),
-        Kind::Quote => (
-            Some(p.background.base.text.scale_alpha(0.75)),
-            Some(Font {
-                style: Style::Italic,
-                ..base
-            }),
-        ),
-        Kind::Strike => (Some(p.background.base.text.scale_alpha(0.55)), None),
-    };
-    Format { color, font }
+        Kind::Quote => (Some(ink.scale_alpha(0.75)), Some(italic_font(base))),
+        Kind::Strike => (Some(ink.scale_alpha(0.55)), None),
+    }
+}
+
+fn bold_font(base: Font) -> Font {
+    Font {
+        weight: Weight::Bold,
+        ..base
+    }
+}
+
+fn italic_font(base: Font) -> Font {
+    Font {
+        style: Style::Italic,
+        ..base
+    }
 }
 
 /// Compute highlight spans for one line. Returns the spans and whether the

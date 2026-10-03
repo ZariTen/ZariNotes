@@ -43,32 +43,62 @@ pub(super) enum Input {
 
 pub(super) fn input_action(action: &Action, selected: bool) -> Input {
     match action {
-        Action::Edit(edit) => Input::Edit(if selected {
-            EditKind::Other
-        } else {
-            match edit {
-                Edit::Insert(c) => EditKind::Insert(*c),
-                Edit::Backspace => EditKind::Backspace,
-                Edit::Delete => EditKind::Delete,
-                _ => EditKind::Other,
-            }
-        }),
+        Action::Edit(edit) => Input::Edit(edit_kind(edit, selected)),
         Action::Scroll { .. } => Input::Ignore,
         _ => Input::Moved,
     }
 }
 
-/// `(starts a new step, group to leave open afterwards)`.
-fn plan(grouping: Option<Group>, kind: EditKind) -> (bool, Option<Group>) {
+fn edit_kind(edit: &Edit, selected: bool) -> EditKind {
+    if selected {
+        return EditKind::Other;
+    }
+    match edit {
+        Edit::Insert(c) => EditKind::Insert(*c),
+        Edit::Backspace => EditKind::Backspace,
+        Edit::Delete => EditKind::Delete,
+        _ => EditKind::Other,
+    }
+}
+
+struct Planned {
+    starts_new: bool,
+    group: Option<Group>,
+}
+
+fn plan(open: Option<Group>, kind: EditKind) -> Planned {
     match kind {
-        EditKind::Insert(c) if c.is_whitespace() => (
-            !matches!(grouping, Some(Group::Insert | Group::Space)),
-            Some(Group::Space),
-        ),
-        EditKind::Insert(_) => (grouping != Some(Group::Insert), Some(Group::Insert)),
-        EditKind::Backspace => (grouping != Some(Group::Backspace), Some(Group::Backspace)),
-        EditKind::Delete => (grouping != Some(Group::Delete), Some(Group::Delete)),
-        EditKind::Other => (true, None),
+        EditKind::Insert(c) => plan_insert(open, c),
+        EditKind::Backspace => same_group(open, Group::Backspace),
+        EditKind::Delete => same_group(open, Group::Delete),
+        EditKind::Other => Planned {
+            starts_new: true,
+            group: None,
+        },
+    }
+}
+
+fn plan_insert(open: Option<Group>, c: char) -> Planned {
+    if c.is_whitespace() {
+        return plan_space(open);
+    }
+    same_group(open, Group::Insert)
+}
+
+/// A space stays with the word it closed, or with a run of spaces (a tab).
+fn plan_space(open: Option<Group>) -> Planned {
+    let continues_word = matches!(open, Some(Group::Insert | Group::Space));
+    Planned {
+        starts_new: !continues_word,
+        group: Some(Group::Space),
+    }
+}
+
+fn same_group(open: Option<Group>, group: Group) -> Planned {
+    let continues = open == Some(group);
+    Planned {
+        starts_new: !continues,
+        group: Some(group),
     }
 }
 
@@ -78,43 +108,49 @@ pub(super) struct Snapshot {
     pub cursor: Position,
 }
 
+/// Previous grouping, kept so a no-op edit can put it back.
+struct Armed {
+    previous: Option<Group>,
+}
+
 #[derive(Default)]
 pub(super) struct History {
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     grouping: Option<Group>,
-    /// Grouping to restore if the edit we just snapshotted changes nothing.
-    armed: Option<Option<Group>>,
+    armed: Option<Armed>,
 }
 
 impl History {
     pub(super) fn begin(&mut self, kind: EditKind, current: Snapshot) -> bool {
-        let (boundary, next) = plan(self.grouping, kind);
-        if !boundary {
-            self.grouping = next;
+        let planned = plan(self.grouping, kind);
+        if !planned.starts_new {
+            self.grouping = planned.group;
             return false;
         }
-        self.armed = Some(self.grouping);
+        self.armed = Some(Armed {
+            previous: self.grouping,
+        });
         self.undo.push(current);
         if self.undo.len() > LIMIT {
             self.undo.drain(0..self.undo.len() - LIMIT);
         }
-        self.grouping = next;
+        self.grouping = planned.group;
         true
     }
 
     /// Drop the snapshot from [`begin`] when the edit was a no-op.
     /// A real edit discards the redo stack.
     pub(super) fn finish(&mut self, changed: bool) {
-        let Some(prev) = self.armed.take() else {
+        let Some(armed) = self.armed.take() else {
             return;
         };
         if changed {
             self.redo.clear();
-        } else {
-            self.undo.pop();
-            self.grouping = prev;
+            return;
         }
+        self.undo.pop();
+        self.grouping = armed.previous;
     }
 
     pub(super) fn close(&mut self) {

@@ -1,7 +1,7 @@
 //! The window: editor surface and footer.
 
-use iced::keyboard::{self, Key};
-use iced::widget::text_editor::{Binding, KeyPress};
+use iced::keyboard::{self, Key, Modifiers};
+use iced::widget::text_editor::{Binding, Content, KeyPress};
 use iced::widget::{button, column, container, row, text, text_editor, tooltip};
 use iced::{Element, Fill, Font};
 
@@ -11,34 +11,12 @@ use super::style::{
 };
 use super::{App, Doc, Message, Mode, SIDEBAR_WIDTH, SOURCE_EDITOR_ID};
 use crate::highlight;
+use crate::live::Live;
 use crate::theme::{self, Appearance};
 
 impl App {
     pub(super) fn view(&self) -> Element<'_, Message> {
-        let theme = theme::iced(self.appearance);
-        let editor: Element<'_, Message> = match &self.doc {
-            Some(Doc::Live(live)) => live.view(&theme).map(Message::Live),
-            Some(Doc::Source(content)) => text_editor(content)
-                .id(SOURCE_EDITOR_ID)
-                .placeholder("Start writing Markdown…")
-                .on_action(Message::Edit)
-                .highlight_with::<highlight::Highlighter>(
-                    highlight::Settings { mono: true },
-                    highlight::to_format,
-                )
-                .key_binding(editor_bindings)
-                .font(Font::MONOSPACE)
-                .size(15)
-                .padding(16)
-                .height(Fill)
-                .style(editor_style)
-                .into(),
-            None => container(text("Select or create a note.").size(16))
-                .center(Fill)
-                .into(),
-        };
-
-        let page = container(editor)
+        let page = container(self.editor_pane())
             .padding([8.0, 12.0])
             .style(writing_surface)
             .clip(true)
@@ -69,76 +47,80 @@ impl App {
             .into()
     }
 
-    // ── helpers ─────────────────────────────────────────────────
+    fn editor_pane(&self) -> Element<'_, Message> {
+        match &self.doc {
+            Some(Doc::Live(live)) => live_editor(live, self.appearance),
+            Some(Doc::Source(content)) => source_editor(content),
+            None => empty_editor(),
+        }
+    }
 
     /// Quiet writing context: the open note, save state, word count, cursor,
     /// a Live / Source switch, and the light / dark theme switch.
     fn footer(&self) -> Element<'_, Message> {
-        let look = theme::tokens(self.appearance);
-        let ink = look.ink;
-        let muted = look.muted;
+        row![
+            container(self.footer_status()).width(Fill).clip(true),
+            row(self.footer_stats()).spacing(16)
+        ]
+        .spacing(16)
+        .padding([2, 4])
+        .align_y(iced::Center)
+        .into()
+    }
 
-        let left: Element<'_, Message> = if let Some(err) = &self.notice {
-            container(
-                text(err)
-                    .size(12)
-                    .color(look.danger)
-                    .wrapping(text::Wrapping::None),
-            )
-            .width(Fill)
-            .clip(true)
-            .into()
-        } else if let Some(rel) = &self.current {
-            let state: Element<'_, Message> = if self.dirty {
-                tooltip(
-                    button(text("Unsaved").size(12))
-                        .padding([2, 8])
-                        .style(unsaved_style)
-                        .on_press(Message::Save),
-                    hint("Save (Ctrl+S)"),
-                    tooltip::Position::Top,
-                )
-                .gap(6)
-                .delay(iced::time::Duration::from_millis(350))
-                .into()
-            } else {
-                text("Saved").size(12).color(muted).into()
-            };
-            row![
-                state,
-                line(rel.display().to_string(), 12.0, Font::DEFAULT, ink),
+    fn footer_status(&self) -> Element<'_, Message> {
+        let look = theme::tokens(self.appearance);
+        if let Some(err) = &self.notice {
+            return line(err.clone(), 12.0, Font::DEFAULT, look.danger);
+        }
+        if let Some(rel) = &self.current {
+            return row![
+                self.save_state(),
+                line(rel.display().to_string(), 12.0, Font::DEFAULT, look.ink),
             ]
             .spacing(8)
             .align_y(iced::Center)
-            .into()
-        } else {
-            text("No note open").size(12).color(muted).into()
-        };
+            .into();
+        }
+        text("No note open").size(12).color(look.muted).into()
+    }
 
-        let mut right: Vec<Element<'_, Message>> = Vec::new();
+    fn save_state(&self) -> Element<'_, Message> {
+        let muted = theme::tokens(self.appearance).muted;
+        if !self.dirty {
+            return text("Saved").size(12).color(muted).into();
+        }
+        tooltip(
+            button(text("Unsaved").size(12))
+                .padding([2, 8])
+                .style(unsaved_style)
+                .on_press(Message::Save),
+            hint("Save (Ctrl+S)"),
+            tooltip::Position::Top,
+        )
+        .gap(6)
+        .delay(iced::time::Duration::from_millis(350))
+        .into()
+    }
+
+    fn footer_stats(&self) -> Vec<Element<'_, Message>> {
+        let muted = theme::tokens(self.appearance).muted;
+        let mut stats = Vec::new();
         if self.doc.is_some() {
             let words = self.text().as_deref().map(word_count).unwrap_or(0);
-            right.push(text(words_label(words)).size(12).color(muted).into());
+            stats.push(text(words_label(words)).size(12).color(muted).into());
             if let Some(cursor) = self.cursor() {
-                right.push(
+                stats.push(
                     text(format!("Ln {}, Col {}", cursor.line + 1, cursor.column + 1))
                         .size(12)
                         .color(muted)
                         .into(),
                 );
             }
-            right.push(self.mode_switch());
+            stats.push(self.mode_switch());
         }
-        right.push(self.theme_switch());
-
-        row![
-            container(left).width(Fill).clip(true),
-            row(right).spacing(16)
-        ]
-        .spacing(16)
-        .padding([2, 4])
-        .align_y(iced::Center)
-        .into()
+        stats.push(self.theme_switch());
+        stats
     }
 
     fn theme_switch(&self) -> Element<'_, Message> {
@@ -188,28 +170,57 @@ impl App {
     }
 }
 
-/// Ctrl+S saves, Ctrl+Z undoes, Ctrl+Shift+Z / Ctrl+Y redoes, Ctrl+E toggles
-/// live preview, Tab inserts spaces.
-fn editor_bindings(kp: KeyPress) -> Option<Binding<Message>> {
-    if let Some(message) = shortcut(kp.key.as_ref(), kp.modifiers) {
-        return Some(Binding::Custom(message));
-    }
-    if matches!(kp.key, Key::Named(keyboard::key::Named::Tab)) && kp.modifiers.is_empty() {
-        return Some(Binding::Sequence(vec![Binding::Insert(' '); 4]));
-    }
-    Binding::from_key_press(kp)
+fn live_editor(live: &Live, appearance: Appearance) -> Element<'_, Message> {
+    let theme = theme::iced(appearance);
+    live.view(&theme).map(Message::Live)
 }
 
-pub(super) fn shortcut(
-    key: iced::keyboard::Key<&str>,
-    modifiers: iced::keyboard::Modifiers,
-) -> Option<Message> {
+fn source_editor(content: &Content) -> Element<'_, Message> {
+    text_editor(content)
+        .id(SOURCE_EDITOR_ID)
+        .placeholder("Start writing Markdown…")
+        .on_action(Message::Edit)
+        .highlight_with::<highlight::Highlighter>(
+            highlight::Settings { mono: true },
+            highlight::to_format,
+        )
+        .key_binding(editor_bindings)
+        .font(Font::MONOSPACE)
+        .size(15)
+        .padding(16)
+        .height(Fill)
+        .style(editor_style)
+        .into()
+}
+
+fn empty_editor() -> Element<'static, Message> {
+    container(text("Select or create a note.").size(16))
+        .center(Fill)
+        .into()
+}
+
+/// Ctrl+S saves, Ctrl+Z undoes, Ctrl+Shift+Z / Ctrl+Y redoes, Ctrl+E toggles
+/// live preview, Tab inserts spaces.
+fn editor_bindings(key_press: KeyPress) -> Option<Binding<Message>> {
+    if let Some(message) = shortcut(key_press.key.as_ref(), key_press.modifiers) {
+        return Some(Binding::Custom(message));
+    }
+    if matches!(key_press.key, Key::Named(keyboard::key::Named::Tab))
+        && key_press.modifiers.is_empty()
+    {
+        return Some(Binding::Sequence(vec![Binding::Insert(' '); 4]));
+    }
+    Binding::from_key_press(key_press)
+}
+
+pub(super) fn shortcut(key: keyboard::Key<&str>, modifiers: Modifiers) -> Option<Message> {
     if !modifiers.command() {
         return None;
     }
     match key {
         Key::Character("s") => Some(Message::Save),
         Key::Character("e") => Some(Message::ToggleMode),
+        // Shift+Z is redo. It has to be tried before plain Z, or undo would steal it.
         Key::Character("z" | "Z") if modifiers.shift() => Some(Message::Redo),
         Key::Character("y" | "Y") if !modifiers.shift() => Some(Message::Redo),
         Key::Character("z" | "Z") => Some(Message::Undo),

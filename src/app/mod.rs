@@ -13,7 +13,7 @@ use iced::event::{self, Event};
 use iced::font::Weight;
 use iced::keyboard;
 use iced::mouse;
-use iced::widget::text_editor::{self, Position};
+use iced::widget::text_editor::{self, Action};
 use iced::{Font, Subscription, Task};
 
 use crate::config::{load_appearance, load_last_workspace, save_appearance, save_last_workspace};
@@ -87,7 +87,7 @@ enum Message {
     FilesScanned(Dir),
     ToggleDir(PathBuf),
     Open(PathBuf),
-    Edit(text_editor::Action),
+    Edit(Action),
     Live(live::Msg),
     ToggleMode,
     SetMode(Mode),
@@ -139,134 +139,20 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::PickWorkspace => Task::perform(
-                async {
-                    rfd::AsyncFileDialog::new()
-                        .set_title("Select workspace folder")
-                        .pick_folder()
-                        .await
-                        .map(|h| h.path().to_path_buf())
-                },
-                Message::WorkspacePicked,
-            ),
+            Message::PickWorkspace => self.pick_workspace(),
             Message::WorkspacePicked(None) => Task::none(),
-            Message::WorkspacePicked(Some(dir)) => {
-                self.save_if_dirty();
-                self.current = None;
-                self.doc = None;
-                self.dirty = false;
-                self.saved = None;
-                self.history.clear();
-                self.tree = Dir::default();
-                self.expanded.clear();
-                self.filter.clear();
-                self.notice = None;
-                save_last_workspace(&dir);
-                self.workspace = Some(dir);
-                self.scan()
-            }
+            Message::WorkspacePicked(Some(dir)) => self.open_workspace(dir),
             Message::Refresh => self.scan(),
             Message::FilesScanned(tree) => {
                 self.tree = tree;
                 Task::none()
             }
-            Message::ToggleDir(dir) => {
-                if !self.expanded.remove(&dir) {
-                    self.expanded.insert(dir);
-                }
-                Task::none()
-            }
-            Message::Open(rel) => {
-                if self.current.as_ref() == Some(&rel) {
-                    return Task::none();
-                }
-                self.save_if_dirty();
-                let Some(ws) = &self.workspace else {
-                    return Task::none();
-                };
-                match std::fs::read_to_string(ws.join(&rel)) {
-                    Ok(body) => {
-                        self.notice = None;
-                        self.expand_ancestors(&rel);
-                        self.current = Some(rel);
-                        self.history.clear();
-                        self.dirty = false;
-                        let task = self.load(&body, Position { line: 0, column: 0 });
-                        // Compare undo against the editor's text, not the raw
-                        // file, so a normalized newline doesn't look unsaved.
-                        self.saved = self.text();
-                        task
-                    }
-                    Err(e) => {
-                        self.notice = Some(format!("Failed to open {}: {e}", rel.display()));
-                        Task::none()
-                    }
-                }
-            }
-            Message::Edit(action) => {
-                let selected = matches!(&self.doc, Some(Doc::Source(content)) if content.selection().is_some());
-                match history::input_action(&action, selected) {
-                    history::Input::Edit(kind) => {
-                        self.record_edit(kind, |app| {
-                            if let Some(Doc::Source(content)) = &mut app.doc {
-                                content.perform(action);
-                            }
-                        });
-                    }
-                    history::Input::Moved => {
-                        self.history.close();
-                        if let Some(Doc::Source(content)) = &mut self.doc {
-                            content.perform(action);
-                        }
-                    }
-                    history::Input::Ignore => {
-                        if let Some(Doc::Source(content)) = &mut self.doc {
-                            content.perform(action);
-                        }
-                    }
-                }
-                Task::none()
-            }
-            Message::Live(msg) => {
-                let selected = matches!(&self.doc, Some(Doc::Live(live)) if live.has_selection());
-                let input = live_input(&msg, selected);
-                let (task, outcome) = match input {
-                    history::Input::Edit(kind) => self.record_edit(kind, |app| {
-                        let Some(Doc::Live(live)) = &mut app.doc else {
-                            return (Task::none(), live::Outcome::None);
-                        };
-                        live.update(msg)
-                    }),
-                    history::Input::Moved => {
-                        self.history.close();
-                        self.update_live(msg)
-                    }
-                    history::Input::Ignore => self.update_live(msg),
-                };
-                let task = task.map(Message::Live);
-                match outcome {
-                    live::Outcome::None => task,
-                    live::Outcome::Changed => {
-                        self.sync_dirty();
-                        task
-                    }
-                    live::Outcome::Save => {
-                        self.save();
-                        task
-                    }
-                    live::Outcome::ToggleMode => self.toggle_mode(),
-                    live::Outcome::Link(url) => Task::batch([task, self.open_link(&url)]),
-                    live::Outcome::Undo => self.undo(),
-                    live::Outcome::Redo => self.redo(),
-                }
-            }
+            Message::ToggleDir(dir) => self.toggle_dir(dir),
+            Message::Open(rel) => self.open_file(rel),
+            Message::Edit(action) => self.edit_source(action),
+            Message::Live(msg) => self.edit_live(msg),
             Message::ToggleMode => self.toggle_mode(),
-            Message::SetMode(mode) => {
-                if self.mode == mode || self.doc.is_none() {
-                    return Task::none();
-                }
-                self.toggle_mode()
-            }
+            Message::SetMode(mode) => self.set_mode(mode),
             Message::Save => {
                 self.save();
                 Task::none()
@@ -282,13 +168,134 @@ impl App {
                 Task::none()
             }
             Message::CreateNote => self.create_note(),
-            Message::SetAppearance(appearance) => {
-                if self.appearance != appearance {
-                    self.appearance = appearance;
-                    save_appearance(appearance);
-                }
-                Task::none()
+            Message::SetAppearance(appearance) => self.set_appearance(appearance),
+        }
+    }
+
+    fn pick_workspace(&self) -> Task<Message> {
+        Task::perform(
+            async {
+                rfd::AsyncFileDialog::new()
+                    .set_title("Select workspace folder")
+                    .pick_folder()
+                    .await
+                    .map(|handle| handle.path().to_path_buf())
+            },
+            Message::WorkspacePicked,
+        )
+    }
+
+    fn open_workspace(&mut self, dir: PathBuf) -> Task<Message> {
+        self.save_if_dirty();
+        self.current = None;
+        self.doc = None;
+        self.dirty = false;
+        self.saved = None;
+        self.history.clear();
+        self.tree = Dir::default();
+        self.expanded.clear();
+        self.filter.clear();
+        self.notice = None;
+        save_last_workspace(&dir);
+        self.workspace = Some(dir);
+        self.scan()
+    }
+
+    fn toggle_dir(&mut self, dir: PathBuf) -> Task<Message> {
+        if !self.expanded.remove(&dir) {
+            self.expanded.insert(dir);
+        }
+        Task::none()
+    }
+
+    fn set_mode(&mut self, mode: Mode) -> Task<Message> {
+        if self.mode == mode || self.doc.is_none() {
+            return Task::none();
+        }
+        self.toggle_mode()
+    }
+
+    fn set_appearance(&mut self, appearance: Appearance) -> Task<Message> {
+        if self.appearance == appearance {
+            return Task::none();
+        }
+        self.appearance = appearance;
+        save_appearance(appearance);
+        Task::none()
+    }
+
+    fn edit_source(&mut self, action: Action) -> Task<Message> {
+        match history::input_action(&action, self.source_has_selection()) {
+            history::Input::Edit(kind) => {
+                self.record_edit(kind, |app| app.perform_source(action));
             }
+            history::Input::Moved => {
+                self.history.close();
+                self.perform_source(action);
+            }
+            history::Input::Ignore => self.perform_source(action),
+        }
+        Task::none()
+    }
+
+    fn perform_source(&mut self, action: Action) {
+        let Some(Doc::Source(content)) = &mut self.doc else {
+            return;
+        };
+        content.perform(action);
+    }
+
+    fn source_has_selection(&self) -> bool {
+        match &self.doc {
+            Some(Doc::Source(content)) => content.selection().is_some(),
+            _ => false,
+        }
+    }
+
+    fn edit_live(&mut self, msg: live::Msg) -> Task<Message> {
+        let input = live_input(&msg, self.live_has_selection());
+        let (task, outcome) = self.run_live(msg, input);
+        self.finish_live(task, outcome)
+    }
+
+    fn run_live(
+        &mut self,
+        msg: live::Msg,
+        input: history::Input,
+    ) -> (Task<live::Msg>, live::Outcome) {
+        match input {
+            history::Input::Edit(kind) => self.record_edit(kind, |app| app.update_live(msg)),
+            history::Input::Moved => {
+                self.history.close();
+                self.update_live(msg)
+            }
+            history::Input::Ignore => self.update_live(msg),
+        }
+    }
+
+    fn finish_live(&mut self, task: Task<live::Msg>, outcome: live::Outcome) -> Task<Message> {
+        let task = task.map(Message::Live);
+        match outcome {
+            live::Outcome::None => task,
+            live::Outcome::Changed => {
+                self.sync_dirty();
+                task
+            }
+            live::Outcome::Save => {
+                self.save();
+                task
+            }
+            live::Outcome::ToggleMode => self.toggle_mode(),
+            live::Outcome::Link(url) => Task::batch([task, self.open_link(&url)]),
+            live::Outcome::Undo => self.undo(),
+            live::Outcome::Redo => self.redo(),
+        }
+    }
+
+    fn live_has_selection(&self) -> bool {
+        match &self.doc {
+            Some(Doc::Live(live)) => live.has_selection(),
+            _ => false,
         }
     }
 

@@ -5,41 +5,47 @@ use std::path::{Path, PathBuf};
 use crate::theme::Appearance;
 
 fn config_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("zarinotes"))
+    Some(config_base()?.join("zarinotes"))
 }
 
-fn config_file() -> Option<PathBuf> {
-    Some(config_dir()?.join("last_workspace"))
+/// `$XDG_CONFIG_HOME`, or `~/.config` when that variable is unset.
+fn config_base() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg));
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".config"))
+}
+
+fn read_config(name: &str) -> Option<String> {
+    let path = config_dir()?.join(name);
+    std::fs::read_to_string(path).ok()
+}
+
+fn write_config(name: &str, bytes: &[u8]) {
+    let Some(dir) = config_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join(name), bytes);
 }
 
 pub(crate) fn load_last_workspace() -> Option<PathBuf> {
-    let s = std::fs::read_to_string(config_file()?).ok()?;
-    Some(PathBuf::from(s.trim()))
+    let text = read_config("last_workspace")?;
+    Some(PathBuf::from(text.trim()))
 }
 
 pub(crate) fn save_last_workspace(dir: &Path) {
-    if let Some(file) = config_file() {
-        let _ = file.parent().map(std::fs::create_dir_all);
-        let _ = std::fs::write(file, dir.to_string_lossy().as_bytes());
-    }
+    write_config("last_workspace", dir.to_string_lossy().as_bytes());
 }
 
 pub(crate) fn load_appearance() -> Appearance {
-    let Some(path) = config_dir().map(|d| d.join("theme")) else {
-        return Appearance::Dark;
-    };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Some(text) = read_config("theme") else {
         return Appearance::Dark;
     };
     Appearance::parse(text.trim()).unwrap_or(Appearance::Dark)
 }
 
 pub(crate) fn save_appearance(appearance: Appearance) {
-    if let Some(dir) = config_dir() {
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("theme"), appearance.as_str());
-    }
+    write_config("theme", appearance.as_str().as_bytes());
 }

@@ -1,48 +1,83 @@
 //! Open, save, and create notes.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use iced::Task;
 use iced::widget::text_editor::{self, Cursor, Position};
 
+use super::history::{EditKind, Snapshot};
 use super::{App, Doc, Message, Mode, SOURCE_EDITOR_ID};
 use crate::live::Live;
 use crate::tree::Dir;
 
 impl App {
     pub(super) fn scan(&self) -> Task<Message> {
-        match self.workspace.clone() {
-            Some(ws) => Task::perform(async move { Dir::scan(&ws) }, Message::FilesScanned),
-            None => Task::none(),
-        }
+        let Some(workspace) = self.workspace.clone() else {
+            return Task::none();
+        };
+        Task::perform(async move { Dir::scan(&workspace) }, Message::FilesScanned)
     }
 
     pub(super) fn expand_ancestors(&mut self, rel: &Path) {
         let mut dir = rel.parent();
-        while let Some(d) = dir.filter(|d| !d.as_os_str().is_empty()) {
-            self.expanded.insert(d.to_path_buf());
-            dir = d.parent();
+        while let Some(folder) = dir.filter(|folder| !folder.as_os_str().is_empty()) {
+            self.expanded.insert(folder.to_path_buf());
+            dir = folder.parent();
         }
+    }
+
+    pub(super) fn open_file(&mut self, rel: PathBuf) -> Task<Message> {
+        if self.current.as_ref() == Some(&rel) {
+            return Task::none();
+        }
+        self.save_if_dirty();
+        let Some(workspace) = &self.workspace else {
+            return Task::none();
+        };
+        match std::fs::read_to_string(workspace.join(&rel)) {
+            Ok(body) => self.show_opened(rel, &body),
+            Err(error) => {
+                self.notice = Some(format!("Failed to open {}: {error}", rel.display()));
+                Task::none()
+            }
+        }
+    }
+
+    fn show_opened(&mut self, rel: PathBuf, body: &str) -> Task<Message> {
+        self.notice = None;
+        self.expand_ancestors(&rel);
+        self.current = Some(rel);
+        self.history.clear();
+        self.dirty = false;
+        let task = self.load(body, Position { line: 0, column: 0 });
+        // Compare undo against the editor's text, not the raw file, so a
+        // normalized newline doesn't look unsaved.
+        self.saved = self.text();
+        task
     }
 
     /// Load `text` into an editor for the current mode.
     pub(super) fn load(&mut self, text: &str, cursor: Position) -> Task<Message> {
         match self.mode {
-            Mode::Live => {
-                let (live, task) = Live::new(text, cursor);
-                self.doc = Some(Doc::Live(live));
-                task.map(Message::Live)
-            }
-            Mode::Source => {
-                let mut content = text_editor::Content::with_text(text);
-                content.move_to(Cursor {
-                    position: cursor,
-                    selection: None,
-                });
-                self.doc = Some(Doc::Source(content));
-                iced::widget::operation::focus(SOURCE_EDITOR_ID)
-            }
+            Mode::Live => self.load_live(text, cursor),
+            Mode::Source => self.load_source(text, cursor),
         }
+    }
+
+    fn load_live(&mut self, text: &str, cursor: Position) -> Task<Message> {
+        let (live, task) = Live::new(text, cursor);
+        self.doc = Some(Doc::Live(live));
+        task.map(Message::Live)
+    }
+
+    fn load_source(&mut self, text: &str, cursor: Position) -> Task<Message> {
+        let mut content = text_editor::Content::with_text(text);
+        content.move_to(Cursor {
+            position: cursor,
+            selection: None,
+        });
+        self.doc = Some(Doc::Source(content));
+        iced::widget::operation::focus(SOURCE_EDITOR_ID)
     }
 
     pub(super) fn text(&self) -> Option<String> {
@@ -59,8 +94,8 @@ impl App {
         }
     }
 
-    fn capture(&self) -> Option<super::history::Snapshot> {
-        Some(super::history::Snapshot {
+    fn capture(&self) -> Option<Snapshot> {
+        Some(Snapshot {
             text: self.text()?,
             cursor: self.cursor()?,
         })
@@ -73,20 +108,26 @@ impl App {
     /// Run `apply`, snapshotting the note first when `kind` starts a new undo step.
     pub(super) fn record_edit<T>(
         &mut self,
-        kind: super::history::EditKind,
+        kind: EditKind,
         apply: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let before = self.capture().and_then(|snap| {
-            let text = snap.text.clone();
-            self.history.begin(kind, snap).then_some(text)
-        });
+        let before = self.text_before_new_step(kind);
         let result = apply(self);
         if let Some(before) = before {
-            self.history
-                .finish(self.text().as_deref() != Some(before.as_str()));
+            let changed = self.text().as_deref() != Some(before.as_str());
+            self.history.finish(changed);
         }
         self.sync_dirty();
         result
+    }
+
+    fn text_before_new_step(&mut self, kind: EditKind) -> Option<String> {
+        let snap = self.capture()?;
+        let text = snap.text.clone();
+        if self.history.begin(kind, snap) {
+            return Some(text);
+        }
+        None
     }
 
     pub(super) fn update_live(
@@ -111,11 +152,12 @@ impl App {
         let Some(current) = self.capture() else {
             return Task::none();
         };
-        let Some(snap) = (if undo {
+        let snap = if undo {
             self.history.undo(current)
         } else {
             self.history.redo(current)
-        }) else {
+        };
+        let Some(snap) = snap else {
             return Task::none();
         };
         let task = self.load(&snap.text, snap.cursor);
@@ -128,63 +170,58 @@ impl App {
             Mode::Live => Mode::Source,
             Mode::Source => Mode::Live,
         };
-        match (self.text(), self.cursor()) {
-            (Some(text), Some(cursor)) => self.load(&text, cursor),
-            _ => Task::none(),
-        }
+        let (Some(text), Some(cursor)) = (self.text(), self.cursor()) else {
+            return Task::none();
+        };
+        self.load(&text, cursor)
     }
 
     /// Follow a link clicked in the preview: other notes open in the app,
     /// everything else goes to the system handler.
     pub(super) fn open_link(&mut self, url: &str) -> Task<Message> {
-        if url.contains("://") || url.starts_with("mailto:") {
-            if let Err(e) = open_external(url) {
-                self.notice = Some(format!("Could not open {url}: {e}"));
-            } else {
-                self.notice = None;
-            }
-            return Task::none();
+        if is_external_url(url) {
+            return self.open_in_system(url);
         }
+        let Some(rel) = note_path(self.current.as_deref(), url) else {
+            return Task::none();
+        };
+        self.open_workspace_note(rel)
+    }
 
-        let target = url
-            .split('#')
-            .next()
-            .unwrap_or_default()
-            .replace("%20", " ");
-        if target.is_empty() {
-            return Task::none();
+    fn open_in_system(&mut self, url: &str) -> Task<Message> {
+        if let Err(error) = open_external(url) {
+            self.notice = Some(format!("Could not open {url}: {error}"));
+        } else {
+            self.notice = None;
         }
-        let base = self
-            .current
+        Task::none()
+    }
+
+    fn open_workspace_note(&mut self, rel: PathBuf) -> Task<Message> {
+        let found = self
+            .workspace
             .as_ref()
-            .and_then(|c| c.parent())
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
-        let mut rel = normalize(&base.join(&target));
-        if rel.extension().is_none() {
-            rel.set_extension("md");
+            .is_some_and(|workspace| workspace.join(&rel).is_file());
+        if found {
+            return Task::done(Message::Open(rel));
         }
-        match &self.workspace {
-            Some(ws) if ws.join(&rel).is_file() => Task::done(Message::Open(rel)),
-            _ => {
-                self.notice = Some(format!("Note not found: {}", rel.display()));
-                Task::none()
-            }
-        }
+        self.notice = Some(format!("Note not found: {}", rel.display()));
+        Task::none()
     }
 
     pub(super) fn save(&mut self) {
-        let (Some(ws), Some(rel), Some(text)) = (&self.workspace, &self.current, self.text())
+        let (Some(workspace), Some(rel), Some(text)) =
+            (&self.workspace, &self.current, self.text())
         else {
             return;
         };
-        match std::fs::write(ws.join(rel), &text) {
+        match std::fs::write(workspace.join(rel), &text) {
             Ok(()) => {
                 self.saved = Some(text);
                 self.dirty = false;
                 self.notice = None;
             }
-            Err(e) => self.notice = Some(format!("Save failed: {e}")),
+            Err(error) => self.notice = Some(format!("Save failed: {error}")),
         }
     }
 
@@ -195,38 +232,21 @@ impl App {
     }
 
     pub(super) fn create_note(&mut self) -> Task<Message> {
-        let Some(ws) = self.workspace.clone() else {
+        let Some(workspace) = self.workspace.clone() else {
             return Task::none();
         };
-        let name = self.new_name.trim();
-        if name.is_empty() {
-            return Task::none();
-        }
-        let mut rel = PathBuf::from(name);
-        if rel.is_absolute()
-            || rel
-                .components()
-                .any(|c| c == std::path::Component::ParentDir)
-        {
-            self.notice = Some("Note name must stay inside the workspace.".into());
-            return Task::none();
-        }
-        if rel.extension().is_none_or(|e| e != "md") {
-            rel.set_extension("md");
-        }
-
-        let path = ws.join(&rel);
-        if !path.exists() {
-            let result = path
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::write(&path, ""));
-            if let Err(e) = result {
-                self.notice = Some(format!("Could not create {}: {e}", rel.display()));
+        let rel = match read_note_name(&self.new_name) {
+            NoteName::Blank => return Task::none(),
+            NoteName::Outside => {
+                self.notice = Some("Note name must stay inside the workspace.".into());
                 return Task::none();
             }
+            NoteName::Ready(rel) => rel,
+        };
+        if let Err(error) = create_empty_file(&workspace.join(&rel)) {
+            self.notice = Some(format!("Could not create {}: {error}", rel.display()));
+            return Task::none();
         }
-
         self.new_name.clear();
         self.filter.clear();
         self.tree.insert_file(&rel);
@@ -234,15 +254,93 @@ impl App {
     }
 }
 
+enum NoteName {
+    Blank,
+    Outside,
+    Ready(PathBuf),
+}
+
+fn read_note_name(name: &str) -> NoteName {
+    let name = name.trim();
+    if name.is_empty() {
+        return NoteName::Blank;
+    }
+    let mut rel = PathBuf::from(name);
+    if leaves_workspace(&rel) {
+        return NoteName::Outside;
+    }
+    if needs_md_extension(&rel) {
+        rel.set_extension("md");
+    }
+    NoteName::Ready(rel)
+}
+
+fn leaves_workspace(path: &Path) -> bool {
+    if path.is_absolute() {
+        return true;
+    }
+    path.components().any(|part| part == Component::ParentDir)
+}
+
+fn needs_md_extension(path: &Path) -> bool {
+    match path.extension() {
+        Some(ext) => ext != "md",
+        None => true,
+    }
+}
+
+fn create_empty_file(path: &Path) -> std::io::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, "")
+}
+
+fn is_external_url(url: &str) -> bool {
+    url.contains("://") || url.starts_with("mailto:")
+}
+
+fn note_path(current: Option<&Path>, url: &str) -> Option<PathBuf> {
+    let target = link_target(url)?;
+    let mut rel = normalize(&note_folder(current).join(target));
+    if rel.extension().is_none() {
+        rel.set_extension("md");
+    }
+    Some(rel)
+}
+
+fn link_target(url: &str) -> Option<String> {
+    let target = url
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .replace("%20", " ");
+    if target.is_empty() {
+        None
+    } else {
+        Some(target)
+    }
+}
+
+fn note_folder(current: Option<&Path>) -> PathBuf {
+    match current.and_then(|path| path.parent()) {
+        Some(parent) => parent.to_path_buf(),
+        None => PathBuf::new(),
+    }
+}
+
 /// Resolve `.` and `..` components without touching the filesystem.
 fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
-    for c in path.components() {
-        match c {
-            std::path::Component::ParentDir => {
+    for part in path.components() {
+        match part {
+            Component::ParentDir => {
                 out.pop();
             }
-            std::path::Component::Normal(p) => out.push(p),
+            Component::Normal(name) => out.push(name),
             _ => {}
         }
     }
@@ -250,15 +348,18 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 fn open_external(url: &str) -> std::io::Result<()> {
-    let program = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(program)
+    std::process::Command::new(open_program())
         .arg(url)
         .spawn()
         .map(drop)
+}
+
+fn open_program() -> &'static str {
+    if cfg!(target_os = "macos") {
+        return "open";
+    }
+    if cfg!(target_os = "windows") {
+        return "explorer";
+    }
+    "xdg-open"
 }

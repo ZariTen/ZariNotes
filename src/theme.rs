@@ -78,12 +78,13 @@ pub fn tokens(appearance: Appearance) -> Tokens {
 }
 
 /// Resolve tokens from the theme iced is currently painting with.
+///
+/// iced only gives us the name we registered in [`iced`].
 pub fn tokens_of(theme: &Theme) -> Tokens {
     if theme.name() == Appearance::Dark.title() {
-        tokens(Appearance::Dark)
-    } else {
-        tokens(Appearance::Light)
+        return tokens(Appearance::Dark);
     }
+    tokens(Appearance::Light)
 }
 
 pub fn iced(appearance: Appearance) -> Theme {
@@ -144,62 +145,97 @@ const DOLCH: Tokens = Tokens {
     dark: true,
 };
 
-fn base_palette(t: Tokens) -> palette::Palette {
+fn base_palette(look: Tokens) -> palette::Palette {
     palette::Palette {
-        background: t.canvas,
-        text: t.ink,
-        primary: t.link,
-        success: t.success,
-        warning: t.warning,
-        danger: t.danger,
+        background: look.canvas,
+        text: look.ink,
+        primary: look.link,
+        success: look.success,
+        warning: look.warning,
+        danger: look.danger,
     }
 }
 
-fn pair(color: Color, text: Color) -> Pair {
+fn text_on(color: Color, text: Color) -> Pair {
     Pair { color, text }
 }
 
 /// Map spec surfaces onto iced's generated slots so stock widgets (rules,
 /// scrollbars, inputs, primary buttons) land on the keyboard colors.
-fn extended(t: Tokens) -> Extended {
-    let ink = t.ink;
+fn extended(look: Tokens) -> Extended {
     Extended {
-        background: palette::Background {
-            base: pair(t.surface, ink),
-            weakest: pair(t.panel, ink),
-            weaker: pair(t.raised, ink),
-            weak: pair(t.raised, ink),
-            neutral: pair(t.canvas, ink),
-            strong: pair(t.border_strong, ink),
-            stronger: pair(t.border, ink),
-            strongest: pair(if t.dark { t.muted } else { t.border_strong }, ink),
-        },
-        primary: palette::Primary {
-            base: pair(t.accent, t.accent_text),
-            weak: pair(t.selection, ink),
-            strong: pair(t.accent_hover, t.accent_text),
-        },
-        secondary: palette::Secondary {
-            base: pair(t.muted, ink),
-            weak: pair(t.muted, ink),
-            strong: pair(t.link, ink),
-        },
-        success: palette::Success {
-            base: pair(t.success, ink),
-            weak: pair(t.success, ink),
-            strong: pair(t.success, ink),
-        },
-        warning: palette::Warning {
-            base: pair(t.warning, ink),
-            weak: pair(t.warning, ink),
-            strong: pair(t.warning, ink),
-        },
-        danger: palette::Danger {
-            base: pair(t.danger, ink),
-            weak: pair(t.danger, ink),
-            strong: pair(t.danger, ink),
-        },
-        is_dark: t.dark,
+        background: background_slots(look),
+        primary: primary_slots(look),
+        secondary: secondary_slots(look),
+        success: success_slots(look),
+        warning: warning_slots(look),
+        danger: danger_slots(look),
+        is_dark: look.dark,
+    }
+}
+
+fn background_slots(look: Tokens) -> palette::Background {
+    let ink = look.ink;
+    palette::Background {
+        base: text_on(look.surface, ink),
+        weakest: text_on(look.panel, ink),
+        weaker: text_on(look.raised, ink),
+        weak: text_on(look.raised, ink),
+        neutral: text_on(look.canvas, ink),
+        strong: text_on(look.border_strong, ink),
+        stronger: text_on(look.border, ink),
+        strongest: text_on(strongest_surface(look), ink),
+    }
+}
+
+fn strongest_surface(look: Tokens) -> Color {
+    if look.dark {
+        look.muted
+    } else {
+        look.border_strong
+    }
+}
+
+fn primary_slots(look: Tokens) -> palette::Primary {
+    palette::Primary {
+        base: text_on(look.accent, look.accent_text),
+        weak: text_on(look.selection, look.ink),
+        strong: text_on(look.accent_hover, look.accent_text),
+    }
+}
+
+fn secondary_slots(look: Tokens) -> palette::Secondary {
+    palette::Secondary {
+        base: text_on(look.muted, look.ink),
+        weak: text_on(look.muted, look.ink),
+        strong: text_on(look.link, look.ink),
+    }
+}
+
+fn success_slots(look: Tokens) -> palette::Success {
+    let tone = text_on(look.success, look.ink);
+    palette::Success {
+        base: tone,
+        weak: tone,
+        strong: tone,
+    }
+}
+
+fn warning_slots(look: Tokens) -> palette::Warning {
+    let tone = text_on(look.warning, look.ink);
+    palette::Warning {
+        base: tone,
+        weak: tone,
+        strong: tone,
+    }
+}
+
+fn danger_slots(look: Tokens) -> palette::Danger {
+    let tone = text_on(look.danger, look.ink);
+    palette::Danger {
+        base: tone,
+        weak: tone,
+        strong: tone,
     }
 }
 

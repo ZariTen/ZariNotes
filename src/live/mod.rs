@@ -31,8 +31,6 @@ use iced::widget::markdown;
 use iced::widget::text_editor::{Action, Position};
 use iced::{Point, Task};
 
-use split::estimate_raw_column;
-
 pub const TEXT_SIZE: f32 = 16.0;
 const LINE_HEIGHT: f32 = TEXT_SIZE * 1.3;
 const EDITOR_ID: &str = "live-editor";
@@ -144,10 +142,10 @@ impl Live {
 
     /// Cursor position in document coordinates.
     pub fn cursor(&self) -> Position {
-        let c = self.editor.cursor().position;
+        let caret = self.editor.cursor().position;
         Position {
-            line: self.editor_lines.start + c.line,
-            column: c.column,
+            line: self.editor_lines.start + caret.line,
+            column: caret.column,
         }
     }
 
@@ -163,127 +161,155 @@ impl Live {
     }
 
     pub fn update(&mut self, msg: Msg) -> (Task<Msg>, Outcome) {
+        // Consumed here so EditorDrag sees only the previous message's hit-test.
         let native_drag = self.native_drag;
         self.native_drag = false;
         match msg {
-            Msg::Edit(action) => {
-                if let Some(task) = self.redirected_selection(&action) {
-                    return (task, Outcome::None);
-                }
-                let is_edit = action.is_edit();
-                let click = matches!(action, Action::Click(_));
-                if click || matches!(action, Action::Drag(_)) {
-                    self.dragging = true;
-                }
-                if matches!(action, Action::Drag(_)) {
-                    self.native_drag = true;
-                }
-                if click && self.shift {
-                    let anchor = self.selection_anchor();
-                    self.editor.perform(action);
-                    return (self.show_selection(anchor, self.cursor()), Outcome::None);
-                }
-                self.editor.perform(action);
-                if !is_edit {
-                    return (self.after_cursor_change(), Outcome::None);
-                }
-                (self.sync_editor(), Outcome::Changed)
-            }
+            Msg::Edit(action) => self.on_edit(action),
             Msg::Nav(nav) => (self.navigate(nav), Outcome::None),
-            Msg::MergeUp => {
-                let s = self.segments[self.active].lines.start;
-                if s == 0 {
-                    return (Task::none(), Outcome::None);
-                }
-                let column = self.lines[s - 1].len();
-                let cur = self.lines.remove(s);
-                self.lines[s - 1].push_str(&cur);
-                self.rebuild();
-                let task = self.set_cursor(Position {
-                    line: s - 1,
-                    column,
-                });
-                (task, Outcome::Changed)
-            }
-            Msg::MergeDown => {
-                let e = self.segments[self.active].lines.end;
-                if e >= self.lines.len() {
-                    return (Task::none(), Outcome::None);
-                }
-                let column = self.lines[e - 1].len();
-                let next = self.lines.remove(e);
-                self.lines[e - 1].push_str(&next);
-                self.rebuild();
-                let task = self.set_cursor(Position {
-                    line: e - 1,
-                    column,
-                });
-                (task, Outcome::Changed)
-            }
-            Msg::Activate(i) => {
-                let pos = self.click_position(i);
-                self.dragging = true;
-                if self.shift {
-                    (self.extend_to(pos), Outcome::None)
-                } else {
-                    (self.set_cursor(pos), Outcome::None)
-                }
-            }
-            Msg::Hover(i, p) => {
-                self.hover = Some((i, p));
-                if !self.dragging {
-                    return (Task::none(), Outcome::None);
-                }
-                let pos = self.click_position(i);
-                (self.extend_to(pos), Outcome::None)
-            }
-            Msg::ToggleTask(line) => {
-                let Some(l) = self.lines.get_mut(line) else {
-                    return (Task::none(), Outcome::None);
-                };
-                if let Some(i) = l.find("[ ]") {
-                    l.replace_range(i..i + 3, "[x]");
-                } else if let Some(i) = l.find("[x]").or_else(|| l.find("[X]")) {
-                    l.replace_range(i..i + 3, "[ ]");
-                }
-                let cursor = self.cursor();
-                self.rebuild();
-                self.active = self.segment_at(cursor.line);
-                (Task::none(), Outcome::Changed)
-            }
+            Msg::MergeUp => self.merge_up(),
+            Msg::MergeDown => self.merge_down(),
+            Msg::Activate(index) => self.activate(index),
+            Msg::Hover(index, point) => self.hover(index, point),
+            Msg::ToggleTask(line) => self.toggle_task(line),
             Msg::Link(url) => (Task::none(), Outcome::Link(url)),
             Msg::Save => (Task::none(), Outcome::Save),
             Msg::ToggleMode => (Task::none(), Outcome::ToggleMode),
             Msg::Undo => (Task::none(), Outcome::Undo),
             Msg::Redo => (Task::none(), Outcome::Redo),
-            Msg::DragEnd => {
-                let was_dragging = self.dragging;
-                self.dragging = false;
-                if !was_dragging {
-                    return (Task::none(), Outcome::None);
-                }
-                // A click focuses the editor, then the release arrives. Keep
-                // that focus so typing works and a one-line selection stays
-                // visible.
-                (
-                    Task::batch([self.after_cursor_change(), self.focus()]),
-                    Outcome::None,
-                )
-            }
+            Msg::DragEnd => self.drag_end(),
             Msg::Modifiers(modifiers) => {
                 self.shift = modifiers.shift();
                 (Task::none(), Outcome::None)
             }
-            Msg::EditorDrag(p) => {
-                if native_drag || !self.dragging || !self.spans_extra() {
-                    return (Task::none(), Outcome::None);
-                }
-                let local =
-                    ((p.y / LINE_HEIGHT) as usize).min(self.editor_lines.len().saturating_sub(1));
-                let line = (self.editor_lines.start + local).min(self.lines.len() - 1);
-                let column = estimate_raw_column(&self.lines[line], p.x);
-                (self.extend_to(Position { line, column }), Outcome::None)
-            }
+            Msg::EditorDrag(point) => self.on_editor_drag(point, native_drag),
         }
     }
+
+    fn on_edit(&mut self, action: Action) -> (Task<Msg>, Outcome) {
+        if let Some(task) = self.redirected_selection(&action) {
+            return (task, Outcome::None);
+        }
+        self.mark_drag(&action);
+        if self.shift_click(&action) {
+            return (self.extend_shift_click(action), Outcome::None);
+        }
+        let edited = action.is_edit();
+        self.editor.perform(action);
+        if !edited {
+            return (self.after_cursor_change(), Outcome::None);
+        }
+        (self.sync_editor(), Outcome::Changed)
+    }
+
+    fn mark_drag(&mut self, action: &Action) {
+        if matches!(action, Action::Click(_) | Action::Drag(_)) {
+            self.dragging = true;
+        }
+        if matches!(action, Action::Drag(_)) {
+            self.native_drag = true;
+        }
+    }
+
+    fn shift_click(&self, action: &Action) -> bool {
+        self.shift && matches!(action, Action::Click(_))
+    }
+
+    fn extend_shift_click(&mut self, action: Action) -> Task<Msg> {
+        let anchor = self.selection_anchor();
+        self.editor.perform(action);
+        self.show_selection(anchor, self.cursor())
+    }
+
+    fn merge_up(&mut self) -> (Task<Msg>, Outcome) {
+        let line = self.segments[self.active].lines.start;
+        self.join_with_previous(line)
+    }
+
+    fn merge_down(&mut self) -> (Task<Msg>, Outcome) {
+        let line = self.segments[self.active].lines.end;
+        self.join_with_previous(line)
+    }
+
+    fn join_with_previous(&mut self, line: usize) -> (Task<Msg>, Outcome) {
+        if line == 0 || line >= self.lines.len() {
+            return (Task::none(), Outcome::None);
+        }
+        let column = self.lines[line - 1].len();
+        let removed = self.lines.remove(line);
+        self.lines[line - 1].push_str(&removed);
+        self.rebuild();
+        let task = self.set_cursor(Position {
+            line: line - 1,
+            column,
+        });
+        (task, Outcome::Changed)
+    }
+
+    fn activate(&mut self, index: usize) -> (Task<Msg>, Outcome) {
+        let pos = self.click_position(index);
+        self.dragging = true;
+        if self.shift {
+            return (self.extend_to(pos), Outcome::None);
+        }
+        (self.set_cursor(pos), Outcome::None)
+    }
+
+    fn hover(&mut self, index: usize, point: Point) -> (Task<Msg>, Outcome) {
+        self.hover = Some((index, point));
+        if !self.dragging {
+            return (Task::none(), Outcome::None);
+        }
+        let pos = self.click_position(index);
+        (self.extend_to(pos), Outcome::None)
+    }
+
+    fn toggle_task(&mut self, line: usize) -> (Task<Msg>, Outcome) {
+        let Some(text) = self.lines.get_mut(line) else {
+            return (Task::none(), Outcome::None);
+        };
+        flip_task_box(text);
+        let cursor = self.cursor();
+        self.rebuild();
+        self.active = self.segment_at(cursor.line);
+        (Task::none(), Outcome::Changed)
+    }
+
+    fn drag_end(&mut self) -> (Task<Msg>, Outcome) {
+        let was_dragging = self.dragging;
+        self.dragging = false;
+        if !was_dragging {
+            return (Task::none(), Outcome::None);
+        }
+        // A click focuses the editor, then the release arrives. Keep that
+        // focus so typing works and a one-line selection stays visible.
+        (
+            Task::batch([self.after_cursor_change(), self.focus()]),
+            Outcome::None,
+        )
+    }
+
+    fn on_editor_drag(&mut self, point: Point, native_drag: bool) -> (Task<Msg>, Outcome) {
+        if native_drag || !self.dragging || !self.spans_extra() {
+            return (Task::none(), Outcome::None);
+        }
+        (self.extend_to(self.point_in_editor(point)), Outcome::None)
+    }
+}
+
+fn flip_task_box(line: &mut String) {
+    if let Some(at) = line.find("[ ]") {
+        line.replace_range(at..at + 3, "[x]");
+        return;
+    }
+    if let Some(at) = checked_box(line) {
+        line.replace_range(at..at + 3, "[ ]");
+    }
+}
+
+fn checked_box(line: &str) -> Option<usize> {
+    if let Some(at) = line.find("[x]") {
+        return Some(at);
+    }
+    line.find("[X]")
 }
