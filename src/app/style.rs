@@ -145,6 +145,27 @@ pub(super) fn words_label(n: usize) -> String {
     }
 }
 
+pub(super) fn menu_card(theme: &Theme) -> container::Style {
+    let look = theme::tokens_of(theme);
+    container::Style {
+        background: Some(look.raised.into()),
+        text_color: Some(look.ink),
+        border: hairline(look.border_strong),
+        shadow: card_shadow(look.dark),
+        ..container::Style::default()
+    }
+}
+
+pub(super) fn menu_item_style(theme: &Theme, status: button::Status) -> button::Style {
+    let look = theme::tokens_of(theme);
+    button::Style {
+        background: row_fill(look, false, status),
+        text_color: look.ink,
+        border: border::rounded(6),
+        ..button::Style::default()
+    }
+}
+
 pub(super) fn tree_button<'a>(
     body: impl Into<Element<'a, Message>>,
     pad: Padding,

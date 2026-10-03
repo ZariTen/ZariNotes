@@ -47,6 +47,14 @@ impl Dir {
         dir.files.insert(file);
     }
 
+    /// Add an empty folder at a workspace-relative path, creating parents.
+    pub fn insert_dir(&mut self, rel: &Path) {
+        let mut dir = self;
+        for name in normal_names(rel) {
+            dir = dir.dirs.entry(name).or_default();
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.dirs.is_empty() && self.files.is_empty()
     }
@@ -137,7 +145,14 @@ mod tests {
         assert!(root.files.contains("a.md"));
         let journal = &root.dirs["journal"];
         assert!(journal.files.contains("index.md"));
-        assert!(journal.dirs["2026"].files.contains("sept.md"));
+        assert!(root.dirs["journal"].dirs["2026"].files.contains("sept.md"));
+    }
+
+    #[test]
+    fn insert_dir_keeps_empty_folders() {
+        let mut root = Dir::default();
+        root.insert_dir(Path::new("journal/2026"));
+        assert!(root.dirs["journal"].dirs["2026"].is_empty());
     }
 
     #[test]

@@ -1,14 +1,19 @@
-//! Workspace sidebar: folder tree, filter, and new-note field.
+//! Workspace sidebar: search, folder tree, and a right-click create menu.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use iced::widget::{button, column, container, row, rule, scrollable, space, text, text_input};
-use iced::{Element, Fill, Font, Padding};
-
-use super::style::{
-    field_style, icon_button, line, rounded_primary, rounded_subtle, row_label, tree_button,
+use iced::widget::{
+    button, column, container, float, mouse_area, row, rule, scrollable, space, stack, text,
+    text_input,
 };
-use super::{App, LABEL, MEDIUM, Message};
+use iced::{Element, Fill, Font, Padding, Point, Rectangle, Vector};
+
+use super::spot::spot;
+use super::style::{
+    field_style, icon_button, line, menu_card, menu_item_style, rounded_primary, rounded_subtle,
+    row_label, tree_button,
+};
+use super::{App, CREATE_NAME_ID, CreateKind, CreatePrompt, CreateStep, LABEL, MEDIUM, Message};
 use crate::icons;
 use crate::theme;
 use crate::tree::Dir;
@@ -23,17 +28,22 @@ impl App {
         container(body).padding(14).width(Fill).height(Fill).into()
     }
 
+    /// Search bar and the note tree. A right-click opens a popup at the cursor.
     fn open_sidebar(&self) -> Element<'_, Message> {
-        column![
+        let tree = column![
             self.workspace_header(),
-            self.filter_block(),
-            self.new_note_block(),
+            self.search_bar(),
             rule::horizontal(1),
             self.notes_header(),
             scrollable(column(self.note_rows()).spacing(2)).height(Fill),
         ]
         .spacing(14)
-        .into()
+        .width(Fill)
+        .height(Fill);
+        spot(tree, |at| Message::AskCreate {
+            parent: PathBuf::new(),
+            at,
+        })
     }
 
     fn closed_sidebar(&self) -> Element<'_, Message> {
@@ -73,11 +83,7 @@ impl App {
         .into()
     }
 
-    fn filter_block(&self) -> Element<'_, Message> {
-        labeled("Filter", self.filter_row(), self.appearance)
-    }
-
-    fn filter_row(&self) -> Element<'_, Message> {
+    fn search_bar(&self) -> Element<'_, Message> {
         let input = text_input("Find a note…", &self.filter)
             .on_input(Message::FilterChanged)
             .padding([8, 10])
@@ -99,24 +105,67 @@ impl App {
         .into()
     }
 
-    fn new_note_block(&self) -> Element<'_, Message> {
-        let can_add = !self.new_name.trim().is_empty();
-        let row = row![
-            text_input("Name or folder/name", &self.new_name)
-                .on_input(Message::NewNameChanged)
-                .on_submit(Message::CreateNote)
+    /// Popup at the right-click, drawn above the rest of the window.
+    pub(super) fn layer_popup<'a>(
+        &'a self,
+        window: impl Into<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        let window = window.into();
+        let Some(prompt) = &self.create else {
+            return window;
+        };
+        stack![
+            window,
+            mouse_area(space().width(Fill).height(Fill)).on_press(Message::DismissCreate),
+            self.popup(prompt),
+        ]
+        .width(Fill)
+        .height(Fill)
+        .into()
+    }
+
+    fn popup(&self, prompt: &CreatePrompt) -> Element<'_, Message> {
+        let at = prompt.at;
+        let menu = container(self.popup_body(prompt))
+            .padding(4)
+            .width(180)
+            .style(menu_card);
+        float(menu)
+            .translate(move |bounds, viewport| place_popup(at, bounds, viewport))
+            .into()
+    }
+
+    fn popup_body(&self, prompt: &CreatePrompt) -> Element<'_, Message> {
+        match prompt.step {
+            CreateStep::Choose => column![
+                popup_item("New Note", Message::PickCreate(CreateKind::Note)),
+                popup_item("New Folder", Message::PickCreate(CreateKind::Folder)),
+            ]
+            .spacing(2)
+            .into(),
+            CreateStep::Name(kind) => self.create_name(kind, prompt),
+        }
+    }
+
+    fn create_name(&self, kind: CreateKind, prompt: &CreatePrompt) -> Element<'_, Message> {
+        let can_add = !prompt.name.trim().is_empty();
+        row![
+            text_input(name_placeholder(kind), &prompt.name)
+                .id(CREATE_NAME_ID)
+                .on_input(Message::CreateNameChanged)
+                .on_submit(Message::SubmitCreate)
                 .padding([8, 10])
                 .size(14)
                 .width(Fill)
                 .style(field_style),
-            button(text("Add").size(13))
+            button(text("Create").size(13))
                 .padding([8, 12])
                 .style(rounded_primary)
-                .on_press_maybe(can_add.then_some(Message::CreateNote)),
+                .on_press_maybe(can_add.then_some(Message::SubmitCreate)),
         ]
         .spacing(6)
-        .align_y(iced::Center);
-        labeled("New note", row, self.appearance)
+        .align_y(iced::Center)
+        .into()
     }
 
     fn notes_header(&self) -> Element<'_, Message> {
@@ -197,13 +246,20 @@ impl App {
         } else {
             icons::chevron(open).into()
         };
-        rows.push(tree_button(
-            row![chevron, icons::folder(open), row_label(name, MEDIUM)]
-                .spacing(8)
-                .align_y(iced::Center),
-            row_pad(depth),
-            false,
-            Message::ToggleDir(path.to_path_buf()),
+        let parent = path.to_path_buf();
+        rows.push(spot(
+            tree_button(
+                row![chevron, icons::folder(open), row_label(name, MEDIUM)]
+                    .spacing(8)
+                    .align_y(iced::Center),
+                row_pad(depth),
+                false,
+                Message::ToggleDir(path.to_path_buf()),
+            ),
+            move |at| Message::AskCreate {
+                parent: parent.clone(),
+                at,
+            },
         ));
     }
 
@@ -230,25 +286,46 @@ impl App {
                     .into(),
             );
         }
-        rows.push(tree_button(
-            row(parts).spacing(8).align_y(iced::Center),
-            row_pad(depth),
-            selected,
-            Message::Open(path),
+        let parent = prefix.to_path_buf();
+        rows.push(spot(
+            tree_button(
+                row(parts).spacing(8).align_y(iced::Center),
+                row_pad(depth),
+                selected,
+                Message::Open(path),
+            ),
+            move |at| Message::AskCreate {
+                parent: parent.clone(),
+                at,
+            },
         ));
     }
 }
 
-fn labeled<'a>(
-    title: &'a str,
-    body: impl Into<Element<'a, Message>>,
-    appearance: theme::Appearance,
-) -> Element<'a, Message> {
-    let label = theme::tokens(appearance).muted;
-    let body = body.into();
-    column![text(title).size(12).font(LABEL).color(label), body]
-        .spacing(4)
+fn popup_item(label: &'static str, message: Message) -> Element<'static, Message> {
+    button(text(label).size(14))
+        .width(Fill)
+        .padding([6, 10])
+        .style(menu_item_style)
+        .on_press(message)
         .into()
+}
+
+fn place_popup(at: Point, bounds: Rectangle, viewport: Rectangle) -> Vector {
+    let x =
+        at.x.min(viewport.x + viewport.width - bounds.width)
+            .max(viewport.x);
+    let y =
+        at.y.min(viewport.y + viewport.height - bounds.height)
+            .max(viewport.y);
+    Vector::new(x - bounds.x, y - bounds.y)
+}
+
+fn name_placeholder(kind: CreateKind) -> &'static str {
+    match kind {
+        CreateKind::Note => "Note name",
+        CreateKind::Folder => "Folder name",
+    }
 }
 
 fn workspace_title(workspace: &Path, appearance: theme::Appearance) -> Element<'static, Message> {
@@ -297,7 +374,7 @@ fn note_count(filter: &str, tree: &Dir) -> String {
 fn empty_tree_message(filter: &str, appearance: theme::Appearance) -> Element<'static, Message> {
     let muted = theme::tokens(appearance).muted;
     let message = if filter.trim().is_empty() {
-        "No notes yet. Type a name above and press Add.".into()
+        "No notes yet. Right-click to create a note or folder.".into()
     } else {
         format!("No notes match \"{}\".", filter.trim())
     };

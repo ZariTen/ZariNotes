@@ -6,7 +6,9 @@ use iced::Task;
 use iced::widget::text_editor::{self, Cursor, Position};
 
 use super::history::{EditKind, Snapshot};
-use super::{App, Doc, Message, Mode, SOURCE_EDITOR_ID};
+use super::{
+    App, CREATE_NAME_ID, CreateKind, CreatePrompt, CreateStep, Doc, Message, Mode, SOURCE_EDITOR_ID,
+};
 use crate::live::Live;
 use crate::tree::Dir;
 
@@ -231,48 +233,111 @@ impl App {
         }
     }
 
-    pub(super) fn create_note(&mut self) -> Task<Message> {
+    pub(super) fn ask_create(&mut self, parent: PathBuf, at: iced::Point) -> Task<Message> {
+        if self.workspace.is_none() {
+            return Task::none();
+        }
+        self.notice = None;
+        self.create = Some(CreatePrompt {
+            parent,
+            at,
+            step: CreateStep::Choose,
+            name: String::new(),
+        });
+        Task::none()
+    }
+
+    pub(super) fn pick_create(&mut self, kind: CreateKind) -> Task<Message> {
+        let Some(prompt) = &mut self.create else {
+            return Task::none();
+        };
+        prompt.step = CreateStep::Name(kind);
+        prompt.name.clear();
+        iced::widget::operation::focus(CREATE_NAME_ID)
+    }
+
+    pub(super) fn set_create_name(&mut self, name: String) -> Task<Message> {
+        if let Some(prompt) = &mut self.create {
+            prompt.name = name;
+        }
+        Task::none()
+    }
+
+    pub(super) fn submit_create(&mut self) -> Task<Message> {
         let Some(workspace) = self.workspace.clone() else {
             return Task::none();
         };
-        let rel = match read_note_name(&self.new_name) {
-            NoteName::Blank => return Task::none(),
-            NoteName::Outside => {
-                self.notice = Some("Note name must stay inside the workspace.".into());
+        let Some(prompt) = self.create.clone() else {
+            return Task::none();
+        };
+        let CreateStep::Name(kind) = prompt.step else {
+            return Task::none();
+        };
+        let rel = match entry_path(&prompt.parent, &prompt.name, kind) {
+            EntryPath::Blank => return Task::none(),
+            EntryPath::Rejected => {
+                self.notice = Some("Use a single name, without slashes or ..".into());
                 return Task::none();
             }
-            NoteName::Ready(rel) => rel,
+            EntryPath::Ready(rel) => rel,
         };
-        if let Err(error) = create_empty_file(&workspace.join(&rel)) {
+        if let Err(error) = write_entry(&workspace, &rel, kind) {
             self.notice = Some(format!("Could not create {}: {error}", rel.display()));
             return Task::none();
         }
-        self.new_name.clear();
+        self.create = None;
         self.filter.clear();
-        self.tree.insert_file(&rel);
-        Task::done(Message::Open(rel))
+        self.notice = None;
+        self.reveal_folder(rel.parent().unwrap_or(Path::new("")));
+        match kind {
+            CreateKind::Note => {
+                self.tree.insert_file(&rel);
+                Task::done(Message::Open(rel))
+            }
+            CreateKind::Folder => {
+                self.tree.insert_dir(&rel);
+                self.expanded.insert(rel);
+                Task::none()
+            }
+        }
+    }
+
+    fn reveal_folder(&mut self, folder: &Path) {
+        if !folder.as_os_str().is_empty() {
+            self.expanded.insert(folder.to_path_buf());
+        }
+        self.expand_ancestors(folder);
     }
 }
 
-enum NoteName {
+#[derive(Debug, PartialEq, Eq)]
+enum EntryPath {
     Blank,
-    Outside,
+    Rejected,
     Ready(PathBuf),
 }
 
-fn read_note_name(name: &str) -> NoteName {
+/// A single name inside `parent`. Notes gain `.md` when they don't already have it.
+fn entry_path(parent: &Path, name: &str, kind: CreateKind) -> EntryPath {
     let name = name.trim();
     if name.is_empty() {
-        return NoteName::Blank;
+        return EntryPath::Blank;
     }
-    let mut rel = PathBuf::from(name);
-    if leaves_workspace(&rel) {
-        return NoteName::Outside;
+    if rejected_name(name) {
+        return EntryPath::Rejected;
     }
-    if needs_md_extension(&rel) {
+    let mut rel = parent.join(name);
+    if kind == CreateKind::Note && needs_md_extension(&rel) {
         rel.set_extension("md");
     }
-    NoteName::Ready(rel)
+    if leaves_workspace(&rel) {
+        return EntryPath::Rejected;
+    }
+    EntryPath::Ready(rel)
+}
+
+fn rejected_name(name: &str) -> bool {
+    name == "." || name == ".." || name.starts_with('.') || name.contains(['/', '\\'])
 }
 
 fn leaves_workspace(path: &Path) -> bool {
@@ -286,6 +351,21 @@ fn needs_md_extension(path: &Path) -> bool {
     match path.extension() {
         Some(ext) => ext != "md",
         None => true,
+    }
+}
+
+fn write_entry(workspace: &Path, rel: &Path, kind: CreateKind) -> std::io::Result<()> {
+    let path = workspace.join(rel);
+    match kind {
+        CreateKind::Note => create_empty_file(&path),
+        CreateKind::Folder => {
+            if path.is_file() {
+                return Err(std::io::Error::other(
+                    "a file with that name already exists",
+                ));
+            }
+            std::fs::create_dir_all(path)
+        }
     }
 }
 
@@ -362,4 +442,51 @@ fn open_program() -> &'static str {
         return "explorer";
     }
     "xdg-open"
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{CreateKind, EntryPath, entry_path};
+
+    #[test]
+    fn entry_path_puts_a_note_in_the_chosen_folder() {
+        assert_eq!(
+            entry_path(Path::new("journal"), "ideas", CreateKind::Note),
+            EntryPath::Ready(PathBuf::from("journal/ideas.md"))
+        );
+        assert_eq!(
+            entry_path(Path::new(""), "ideas.md", CreateKind::Note),
+            EntryPath::Ready(PathBuf::from("ideas.md"))
+        );
+    }
+
+    #[test]
+    fn entry_path_keeps_a_folder_name_as_typed() {
+        assert_eq!(
+            entry_path(Path::new("journal"), "2026", CreateKind::Folder),
+            EntryPath::Ready(PathBuf::from("journal/2026"))
+        );
+    }
+
+    #[test]
+    fn entry_path_rejects_a_path_instead_of_a_name() {
+        assert!(matches!(
+            entry_path(Path::new(""), "  ", CreateKind::Note),
+            EntryPath::Blank
+        ));
+        assert!(matches!(
+            entry_path(Path::new("journal"), "a/b", CreateKind::Note),
+            EntryPath::Rejected
+        ));
+        assert!(matches!(
+            entry_path(Path::new(""), "..", CreateKind::Folder),
+            EntryPath::Rejected
+        ));
+        assert!(matches!(
+            entry_path(Path::new(""), ".hidden", CreateKind::Note),
+            EntryPath::Rejected
+        ));
+    }
 }

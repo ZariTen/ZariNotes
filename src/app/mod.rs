@@ -3,6 +3,7 @@
 mod document;
 mod history;
 mod sidebar;
+mod spot;
 mod style;
 mod view;
 
@@ -14,7 +15,7 @@ use iced::font::Weight;
 use iced::keyboard;
 use iced::mouse;
 use iced::widget::text_editor::{self, Action};
-use iced::{Font, Subscription, Task};
+use iced::{Font, Point, Subscription, Task};
 
 use crate::config::{load_appearance, load_last_workspace, save_appearance, save_last_workspace};
 use crate::live::{self, Live};
@@ -60,7 +61,8 @@ struct App {
     /// change clears the unsaved mark instead of leaving it stuck on.
     saved: Option<String>,
     history: history::History,
-    new_name: String,
+    /// Right-click create menu. `None` when it is closed.
+    create: Option<CreatePrompt>,
     /// Sidebar filter. Empty shows the full tree.
     filter: String,
     /// Problem worth showing in the footer. Routine success is not stored.
@@ -79,6 +81,29 @@ enum Mode {
     Source,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateKind {
+    Note,
+    Folder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateStep {
+    Choose,
+    Name(CreateKind),
+}
+
+/// Where a right-click asked to create something, and which step the menu is on.
+#[derive(Debug, Clone, PartialEq)]
+struct CreatePrompt {
+    /// Workspace-relative folder. Empty means the workspace root.
+    parent: PathBuf,
+    /// Window position of the right-click. The popup opens here.
+    at: Point,
+    step: CreateStep,
+    name: String,
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     PickWorkspace,
@@ -94,9 +119,16 @@ enum Message {
     Save,
     Undo,
     Redo,
-    NewNameChanged(String),
     FilterChanged(String),
-    CreateNote,
+    /// Right-click. `parent` is the folder to create in; empty is the workspace root.
+    AskCreate {
+        parent: PathBuf,
+        at: Point,
+    },
+    PickCreate(CreateKind),
+    CreateNameChanged(String),
+    SubmitCreate,
+    DismissCreate,
     SetAppearance(Appearance),
 }
 
@@ -112,7 +144,7 @@ impl App {
             dirty: false,
             saved: None,
             history: history::History::default(),
-            new_name: String::new(),
+            create: None,
             filter: String::new(),
             notice: None,
             appearance: load_appearance(),
@@ -159,15 +191,19 @@ impl App {
             }
             Message::Undo => self.undo(),
             Message::Redo => self.redo(),
-            Message::NewNameChanged(name) => {
-                self.new_name = name;
-                Task::none()
-            }
             Message::FilterChanged(filter) => {
                 self.filter = filter;
+                self.create = None;
                 Task::none()
             }
-            Message::CreateNote => self.create_note(),
+            Message::AskCreate { parent, at } => self.ask_create(parent, at),
+            Message::PickCreate(kind) => self.pick_create(kind),
+            Message::CreateNameChanged(name) => self.set_create_name(name),
+            Message::SubmitCreate => self.submit_create(),
+            Message::DismissCreate => {
+                self.create = None;
+                Task::none()
+            }
             Message::SetAppearance(appearance) => self.set_appearance(appearance),
         }
     }
@@ -195,6 +231,7 @@ impl App {
         self.tree = Dir::default();
         self.expanded.clear();
         self.filter.clear();
+        self.create = None;
         self.notice = None;
         save_last_workspace(&dir);
         self.workspace = Some(dir);
@@ -302,7 +339,7 @@ impl App {
     fn subscription(&self) -> Subscription<Message> {
         // Shortcuts when no editor is focused (the editors handle their own bindings).
         // Pointer events let live preview extend a selection past the active line.
-        Subscription::batch([
+        let mut parts = vec![
             keyboard::listen().filter_map(|event| match event {
                 keyboard::Event::KeyPressed { key, modifiers, .. } => {
                     view::shortcut(key.as_ref(), modifiers)
@@ -310,11 +347,17 @@ impl App {
                 _ => None,
             }),
             event::listen_with(live_pointer),
-        ])
+        ];
+        // Escape closes the create menu even when a text field already handled the key.
+        if self.create.is_some() {
+            parts.push(event::listen_with(dismiss_on_escape));
+        }
+        Subscription::batch(parts)
     }
 }
 
 const SOURCE_EDITOR_ID: &str = "source-editor";
+const CREATE_NAME_ID: &str = "create-name";
 const SIDEBAR_WIDTH: f32 = 300.0;
 
 const MEDIUM: Font = Font {
@@ -336,6 +379,20 @@ fn live_input(msg: &live::Msg, selected: bool) -> history::Input {
         live::Msg::ToggleTask(_) => history::Input::Edit(history::EditKind::Other),
         live::Msg::Nav(_) | live::Msg::Activate(_) | live::Msg::DragEnd => history::Input::Moved,
         _ => history::Input::Ignore,
+    }
+}
+
+fn dismiss_on_escape(
+    event: Event,
+    _status: event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::DismissCreate),
+        _ => None,
     }
 }
 

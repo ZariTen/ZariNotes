@@ -39,12 +39,13 @@ impl App {
         .spacing(8)
         .height(Fill);
 
-        container(body)
-            .padding(8)
-            .style(chassis)
-            .width(Fill)
-            .height(Fill)
-            .into()
+        self.layer_popup(
+            container(body)
+                .padding(8)
+                .style(chassis)
+                .width(Fill)
+                .height(Fill),
+        )
     }
 
     fn editor_pane(&self) -> Element<'_, Message> {

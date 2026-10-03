@@ -7,8 +7,8 @@ A minimal Markdown notes app written in Rust with [iced](https://iced.rs).
 ## Features
 
 - Pick a workspace folder (native dialog via the XDG portal); the last one is reopened on launch
-- Sidebar tree of folders and `.md` files (recursive, hidden entries skipped), with a note filter and a workspace header
-- Create notes by typing a name (`ideas`, `journal/2026-09-24`) and pressing Enter or Add
+- Sidebar tree of folders and `.md` files (recursive, hidden entries skipped), with a search bar and a workspace header
+- Right-click the sidebar. A small menu opens at the cursor with New Note or New Folder, then asks for a name. A right-click on a folder creates inside it; on a note, beside it; otherwise at the workspace root
 - **Live preview**: every line is rendered as Markdown except the one
   under the cursor, which shows the raw (syntax-highlighted) source.
   Code blocks, tables and front matter switch to source as a whole.
