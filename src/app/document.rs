@@ -1,4 +1,4 @@
-//! Open, save, and create notes.
+//! Open, save, create, and delete notes.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -7,7 +7,8 @@ use iced::widget::text_editor::{self, Cursor, Position};
 
 use super::history::{EditKind, Snapshot};
 use super::{
-    App, CREATE_NAME_ID, CreateKind, CreatePrompt, CreateStep, Doc, Message, Mode, SOURCE_EDITOR_ID,
+    App, CREATE_NAME_ID, Clicked, CreateKind, CreatePrompt, CreateStep, Doc, Message, Mode,
+    SOURCE_EDITOR_ID,
 };
 use crate::live::Live;
 use crate::tree::Dir;
@@ -233,7 +234,12 @@ impl App {
         }
     }
 
-    pub(super) fn ask_create(&mut self, parent: PathBuf, at: iced::Point) -> Task<Message> {
+    pub(super) fn ask_create(
+        &mut self,
+        parent: PathBuf,
+        at: iced::Point,
+        clicked: Option<Clicked>,
+    ) -> Task<Message> {
         if self.workspace.is_none() {
             return Task::none();
         }
@@ -243,8 +249,78 @@ impl App {
             at,
             step: CreateStep::Choose,
             name: String::new(),
+            clicked,
         });
         Task::none()
+    }
+
+    pub(super) fn ask_delete(&mut self) -> Task<Message> {
+        let Some(prompt) = &mut self.create else {
+            return Task::none();
+        };
+        if prompt.clicked.is_none() {
+            return Task::none();
+        }
+        prompt.step = CreateStep::ConfirmDelete;
+        Task::none()
+    }
+
+    pub(super) fn confirm_delete(&mut self) -> Task<Message> {
+        let Some(workspace) = self.workspace.clone() else {
+            return Task::none();
+        };
+        let Some(prompt) = self.create.clone() else {
+            return Task::none();
+        };
+        if prompt.step != CreateStep::ConfirmDelete {
+            return Task::none();
+        }
+        let Some(clicked) = prompt.clicked else {
+            return Task::none();
+        };
+        if let Err(error) = remove_clicked(&workspace, &clicked) {
+            self.notice = Some(error);
+            self.create = None;
+            return Task::none();
+        }
+        self.drop_deleted(&clicked);
+        self.create = None;
+        self.notice = None;
+        Task::none()
+    }
+
+    fn drop_deleted(&mut self, clicked: &Clicked) {
+        self.close_if_deleted(clicked);
+        self.drop_expanded(clicked);
+        match clicked {
+            Clicked::Note(path) => {
+                self.tree.remove_file(path);
+            }
+            Clicked::Folder(path) => {
+                self.tree.remove_dir(path);
+            }
+        }
+    }
+
+    fn close_if_deleted(&mut self, clicked: &Clicked) {
+        let Some(current) = self.current.clone() else {
+            return;
+        };
+        if !clicked.deletes(&current) {
+            return;
+        }
+        self.current = None;
+        self.doc = None;
+        self.dirty = false;
+        self.saved = None;
+        self.history.clear();
+    }
+
+    fn drop_expanded(&mut self, clicked: &Clicked) {
+        let Clicked::Folder(folder) = clicked else {
+            return;
+        };
+        self.expanded.retain(|path| !path.starts_with(folder));
     }
 
     pub(super) fn pick_create(&mut self, kind: CreateKind) -> Task<Message> {
@@ -345,6 +421,54 @@ fn leaves_workspace(path: &Path) -> bool {
         return true;
     }
     path.components().any(|part| part == Component::ParentDir)
+}
+
+/// A click target may only name normal path pieces inside the workspace.
+fn stays_in_workspace(rel: &Path) -> bool {
+    let mut parts = rel.components();
+    let Some(Component::Normal(_)) = parts.next() else {
+        return false;
+    };
+    parts.all(|part| matches!(part, Component::Normal(_)))
+}
+
+fn remove_clicked(workspace: &Path, clicked: &Clicked) -> Result<(), String> {
+    let rel = clicked.path();
+    if !stays_in_workspace(rel) {
+        return Err(format!(
+            "Could not delete {}: that path leaves the workspace.",
+            rel.display()
+        ));
+    }
+    let path = workspace.join(rel);
+    if !path.exists() {
+        return Ok(());
+    }
+    match resolved_inside(workspace, &path) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(format!(
+                "Could not delete {}: that path leaves the workspace.",
+                rel.display()
+            ));
+        }
+        Err(error) => return Err(format!("Could not delete {}: {error}", rel.display())),
+    }
+    delete_path(&path, clicked)
+        .map_err(|error| format!("Could not delete {}: {error}", rel.display()))
+}
+
+fn resolved_inside(workspace: &Path, path: &Path) -> std::io::Result<bool> {
+    let root = workspace.canonicalize()?;
+    let target = path.canonicalize()?;
+    Ok(target != root && target.starts_with(&root))
+}
+
+fn delete_path(path: &Path, clicked: &Clicked) -> std::io::Result<()> {
+    match clicked {
+        Clicked::Note(_) => std::fs::remove_file(path),
+        Clicked::Folder(_) => std::fs::remove_dir_all(path),
+    }
 }
 
 fn needs_md_extension(path: &Path) -> bool {
@@ -448,7 +572,7 @@ fn open_program() -> &'static str {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{CreateKind, EntryPath, entry_path};
+    use super::{Clicked, CreateKind, EntryPath, entry_path, remove_clicked, stays_in_workspace};
 
     #[test]
     fn entry_path_puts_a_note_in_the_chosen_folder() {
@@ -488,5 +612,62 @@ mod tests {
             entry_path(Path::new(""), ".hidden", CreateKind::Note),
             EntryPath::Rejected
         ));
+    }
+
+    #[test]
+    fn stays_in_workspace_allows_only_a_normal_relative_path() {
+        assert!(stays_in_workspace(Path::new("journal/ideas.md")));
+        assert!(!stays_in_workspace(Path::new("")));
+        assert!(!stays_in_workspace(Path::new(".")));
+        assert!(!stays_in_workspace(Path::new("..")));
+        assert!(!stays_in_workspace(Path::new("journal/../secret.md")));
+        assert!(!stays_in_workspace(Path::new("/tmp/note.md")));
+    }
+
+    #[test]
+    fn remove_clicked_deletes_a_note_or_folder_and_refuses_to_leave() {
+        let root = std::env::temp_dir().join(format!("zarinotes-delete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("journal")).unwrap();
+        std::fs::write(root.join("journal/ideas.md"), "hi").unwrap();
+        std::fs::write(root.join("keep.md"), "stay").unwrap();
+
+        remove_clicked(&root, &Clicked::Note(PathBuf::from("journal/ideas.md"))).unwrap();
+        assert!(!root.join("journal/ideas.md").exists());
+        assert!(root.join("journal").is_dir());
+        assert!(root.join("keep.md").exists());
+
+        let outside = Clicked::Note(PathBuf::from("../keep.md"));
+        assert!(remove_clicked(&root, &outside).is_err());
+        assert!(root.join("keep.md").exists());
+
+        remove_clicked(&root, &Clicked::Folder(PathBuf::from("journal"))).unwrap();
+        assert!(!root.join("journal").exists());
+        assert!(root.join("keep.md").exists());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_clicked_refuses_a_symlink_that_leaves_the_workspace() {
+        let root =
+            std::env::temp_dir().join(format!("zarinotes-delete-link-{}", std::process::id()));
+        let outside =
+            std::env::temp_dir().join(format!("zarinotes-delete-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("safe.txt"), "no").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+
+        let error = remove_clicked(&root, &Clicked::Folder(PathBuf::from("linked")));
+        assert!(error.is_err());
+        assert!(outside.join("safe.txt").exists());
+        assert!(root.join("linked").exists());
+
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
     }
 }

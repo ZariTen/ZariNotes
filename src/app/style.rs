@@ -166,6 +166,16 @@ pub(super) fn menu_item_style(theme: &Theme, status: button::Status) -> button::
     }
 }
 
+pub(super) fn menu_danger_style(theme: &Theme, status: button::Status) -> button::Style {
+    let look = theme::tokens_of(theme);
+    button::Style {
+        background: row_fill(look, false, status),
+        text_color: look.danger,
+        border: border::rounded(6),
+        ..button::Style::default()
+    }
+}
+
 pub(super) fn tree_button<'a>(
     body: impl Into<Element<'a, Message>>,
     pad: Padding,
@@ -285,6 +295,18 @@ pub(super) fn rounded_primary(theme: &Theme, status: button::Status) -> button::
     )
 }
 
+pub(super) fn rounded_danger(theme: &Theme, status: button::Status) -> button::Style {
+    let look = theme::tokens_of(theme);
+    keycap(
+        look.danger,
+        look.danger,
+        danger_text(look),
+        look.ink,
+        look.danger,
+        status,
+    )
+}
+
 pub(super) fn rounded_subtle(theme: &Theme, status: button::Status) -> button::Style {
     let look = theme::tokens_of(theme);
     keycap(
@@ -295,6 +317,10 @@ pub(super) fn rounded_subtle(theme: &Theme, status: button::Status) -> button::S
         look.border,
         status,
     )
+}
+
+fn danger_text(look: theme::Tokens) -> Color {
+    if look.dark { look.canvas } else { look.raised }
 }
 
 /// Alpha or accent key: fill, a 2px lip, and no lip once the key is down.

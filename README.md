@@ -2,26 +2,7 @@
 
 <img src="assets/icon.svg" alt="" width="88">
 
-A minimal Markdown notes app written in Rust with [iced](https://iced.rs).
-
-## Features
-
-- Pick a workspace folder (native dialog via the XDG portal); the last one is reopened on launch
-- Sidebar tree of folders and `.md` files (recursive, hidden entries skipped), with a search bar and a workspace header
-- Right-click the sidebar. A small menu opens at the cursor with New Note or New Folder, then asks for a name. A right-click on a folder creates inside it; on a note, beside it; otherwise at the workspace root
-- **Live preview**: every line is rendered as Markdown except the one
-  under the cursor, which shows the raw (syntax-highlighted) source.
-  Code blocks, tables and front matter switch to source as a whole.
-- Clickable task checkboxes, links open notes (relative `.md` paths) or the browser,
-  Enter continues lists
-- Select and copy across lines in live preview (drag, shift-arrows, Ctrl+A). The selected lines show as source, so the copy is the Markdown
-- **Source mode** (`Ctrl+E` or the Live / Source switch): plain monospace editor with
-  Markdown highlighting for the whole note
-- `Ctrl+S` to save; the footer shows Unsaved until you do. Unsaved changes are also
-  auto-saved when switching notes or workspaces
-- `Ctrl+Z` undoes the last change (`Ctrl+Shift+Z` or `Ctrl+Y` redoes). A run of typing is one step, in Live and in Source
-- Footer shows the open note, word count, and cursor position. A `•` in the window title means unsaved changes
-- Light / Dark switch in the footer (remembered). Light is Retro Classic (vintage beige and slate); dark is Dolch Noir
+ZariNotes is an offline Markdown writer. It is free software, written in Rust with [iced](https://iced.rs). Notes stay in a folder on your computer. The license is GPL-3.0-or-later.
 
 ## Install
 

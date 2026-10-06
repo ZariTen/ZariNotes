@@ -61,7 +61,7 @@ struct App {
     /// change clears the unsaved mark instead of leaving it stuck on.
     saved: Option<String>,
     history: history::History,
-    /// Right-click create menu. `None` when it is closed.
+    /// Right-click menu. `None` when it is closed.
     create: Option<CreatePrompt>,
     /// Sidebar filter. Empty shows the full tree.
     filter: String,
@@ -91,9 +91,33 @@ enum CreateKind {
 enum CreateStep {
     Choose,
     Name(CreateKind),
+    ConfirmDelete,
 }
 
-/// Where a right-click asked to create something, and which step the menu is on.
+/// The note or folder under the cursor. Empty space has none, so it cannot be deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Clicked {
+    Folder(PathBuf),
+    Note(PathBuf),
+}
+
+impl Clicked {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            Clicked::Folder(path) | Clicked::Note(path) => path,
+        }
+    }
+
+    /// Whether deleting this item also removes the open note at `current`.
+    fn deletes(&self, current: &std::path::Path) -> bool {
+        match self {
+            Clicked::Note(path) => current == path,
+            Clicked::Folder(path) => current.starts_with(path),
+        }
+    }
+}
+
+/// Where a right-click opened the menu, and which step it is on.
 #[derive(Debug, Clone, PartialEq)]
 struct CreatePrompt {
     /// Workspace-relative folder. Empty means the workspace root.
@@ -102,6 +126,8 @@ struct CreatePrompt {
     at: Point,
     step: CreateStep,
     name: String,
+    /// Note or folder that was clicked, if the click was on one.
+    clicked: Option<Clicked>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,13 +147,19 @@ enum Message {
     Redo,
     FilterChanged(String),
     /// Right-click. `parent` is the folder to create in; empty is the workspace root.
+    /// `clicked` is the note or folder under the cursor, if any.
     AskCreate {
         parent: PathBuf,
         at: Point,
+        clicked: Option<Clicked>,
     },
     PickCreate(CreateKind),
     CreateNameChanged(String),
     SubmitCreate,
+    /// Show the delete confirmation. Does nothing if the click was on empty space.
+    AskDelete,
+    /// Permanently delete the confirmed note or folder.
+    ConfirmDelete,
     DismissCreate,
     SetAppearance(Appearance),
 }
@@ -196,10 +228,16 @@ impl App {
                 self.create = None;
                 Task::none()
             }
-            Message::AskCreate { parent, at } => self.ask_create(parent, at),
+            Message::AskCreate {
+                parent,
+                at,
+                clicked,
+            } => self.ask_create(parent, at, clicked),
             Message::PickCreate(kind) => self.pick_create(kind),
             Message::CreateNameChanged(name) => self.set_create_name(name),
             Message::SubmitCreate => self.submit_create(),
+            Message::AskDelete => self.ask_delete(),
+            Message::ConfirmDelete => self.confirm_delete(),
             Message::DismissCreate => {
                 self.create = None;
                 Task::none()

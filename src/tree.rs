@@ -55,6 +55,38 @@ impl Dir {
         }
     }
 
+    /// Drop one note. Parent folders stay, even if this was their last note.
+    pub fn remove_file(&mut self, rel: &Path) -> bool {
+        let mut names = normal_names(rel);
+        let Some(file) = names.pop() else {
+            return false;
+        };
+        let Some(dir) = self.dir_mut(&names) else {
+            return false;
+        };
+        dir.files.remove(&file)
+    }
+
+    /// Drop one folder and everything the tree had under it.
+    pub fn remove_dir(&mut self, rel: &Path) -> bool {
+        let mut names = normal_names(rel);
+        let Some(folder) = names.pop() else {
+            return false;
+        };
+        let Some(dir) = self.dir_mut(&names) else {
+            return false;
+        };
+        dir.dirs.remove(&folder).is_some()
+    }
+
+    fn dir_mut(&mut self, names: &[String]) -> Option<&mut Dir> {
+        let mut dir = self;
+        for name in names {
+            dir = dir.dirs.get_mut(name)?;
+        }
+        Some(dir)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.dirs.is_empty() && self.files.is_empty()
     }
@@ -153,6 +185,35 @@ mod tests {
         let mut root = Dir::default();
         root.insert_dir(Path::new("journal/2026"));
         assert!(root.dirs["journal"].dirs["2026"].is_empty());
+    }
+
+    #[test]
+    fn remove_file_drops_only_that_note() {
+        let mut root = Dir::default();
+        root.insert_file(Path::new("journal/ideas.md"));
+        root.insert_file(Path::new("journal/other.md"));
+        root.insert_dir(Path::new("journal/2026"));
+
+        assert!(root.remove_file(Path::new("journal/ideas.md")));
+        assert!(!root.remove_file(Path::new("journal/missing.md")));
+        assert!(!root.remove_file(Path::new("")));
+
+        let journal = &root.dirs["journal"];
+        assert!(!journal.files.contains("ideas.md"));
+        assert!(journal.files.contains("other.md"));
+        assert!(journal.dirs.contains_key("2026"));
+    }
+
+    #[test]
+    fn remove_dir_drops_the_folder_and_its_notes() {
+        let mut root = Dir::default();
+        root.insert_file(Path::new("journal/2026/sept.md"));
+        root.insert_file(Path::new("keep.md"));
+
+        assert!(root.remove_dir(Path::new("journal")));
+        assert!(!root.remove_dir(Path::new("journal")));
+        assert!(!root.dirs.contains_key("journal"));
+        assert!(root.files.contains("keep.md"));
     }
 
     #[test]
