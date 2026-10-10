@@ -57,7 +57,8 @@
           # Same install as ./install.sh. Nix only adds the runtime-library wrapper.
           postInstall = ''
             wrapProgram $out/bin/zarinotes \
-              --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath libs}
+              --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath libs} \
+              --prefix PATH : ${lib.makeBinPath [ pkgs.wl-clipboard pkgs.xclip ]}
             SKIP_BUILD=1 PREFIX=$out ROOT=$src sh ${./install.sh}
           '';
 
@@ -105,6 +106,8 @@
             clippy
             rust-analyzer
             pkg-config
+            wl-clipboard
+            xclip
           ];
           buildInputs = runtimeLibs pkgs;
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (runtimeLibs pkgs);

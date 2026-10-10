@@ -7,6 +7,7 @@ mod app;
 mod config;
 mod highlight;
 mod icons;
+mod images;
 mod live;
 mod theme;
 mod tree;

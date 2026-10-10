@@ -2,6 +2,7 @@
 
 mod document;
 mod history;
+mod paste;
 mod sidebar;
 mod spot;
 mod style;
@@ -162,6 +163,13 @@ enum Message {
     ConfirmDelete,
     DismissCreate,
     SetAppearance(Appearance),
+    /// Ctrl+V. An image on the clipboard is saved; otherwise the text is pasted.
+    Paste,
+    ClipboardOffer(crate::images::ClipboardOffer),
+    PasteText {
+        text: Option<String>,
+        image_tool_missing: bool,
+    },
 }
 
 impl App {
@@ -243,6 +251,12 @@ impl App {
                 Task::none()
             }
             Message::SetAppearance(appearance) => self.set_appearance(appearance),
+            Message::Paste => self.paste(),
+            Message::ClipboardOffer(offer) => self.clipboard_offer(offer),
+            Message::PasteText {
+                text,
+                image_tool_missing,
+            } => self.paste_text(text, image_tool_missing),
         }
     }
 
@@ -364,6 +378,7 @@ impl App {
             live::Outcome::Link(url) => Task::batch([task, self.open_link(&url)]),
             live::Outcome::Undo => self.undo(),
             live::Outcome::Redo => self.redo(),
+            live::Outcome::Paste => Task::batch([task, self.paste()]),
         }
     }
 

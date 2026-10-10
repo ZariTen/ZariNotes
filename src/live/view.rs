@@ -1,24 +1,29 @@
 //! Rendered Markdown, with the cursor's segment shown as source.
 
+use std::path::{Path, PathBuf};
+
 use iced::advanced::widget::Id;
 use iced::font::Weight;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::text_editor::{Binding, KeyPress};
 use iced::widget::{
-    checkbox, column, container, markdown, mouse_area, row, scrollable, space, text, text_editor,
+    checkbox, column, container, image, markdown, mouse_area, rich_text, row, scrollable, space,
+    text, text_editor,
 };
-use iced::{Border, Color, Element, Fill, Font, Padding, Theme, mouse};
+use iced::{Border, Color, ContentFit, Element, Fill, Font, Padding, Theme, mouse};
 
 use super::split::continue_list;
 use super::{EDITOR_ID, Kind, LINE_HEIGHT, Live, Msg, Nav, SCROLL_ID, Segment, TEXT_SIZE};
 use crate::highlight;
+use crate::images;
 
 impl Live {
-    pub fn view<'a>(&'a self, theme: &Theme) -> Element<'a, Msg> {
+    pub fn view<'a>(&'a self, theme: &Theme, note_dir: Option<&Path>) -> Element<'a, Msg> {
         let settings = markdown_settings(theme);
+        let note_dir = note_dir.map(Path::to_path_buf);
         scrollable(
             container(
-                column(self.blocks(settings))
+                column(self.blocks(settings, note_dir.as_ref()))
                     .max_width(820)
                     .padding([24, 32]),
             )
@@ -30,7 +35,11 @@ impl Live {
         .into()
     }
 
-    fn blocks<'a>(&'a self, settings: markdown::Settings) -> Vec<Element<'a, Msg>> {
+    fn blocks<'a>(
+        &'a self,
+        settings: markdown::Settings,
+        note_dir: Option<&PathBuf>,
+    ) -> Vec<Element<'a, Msg>> {
         let mut blocks = Vec::with_capacity(self.segments.len());
         let mut i = 0;
         while i < self.segments.len() {
@@ -44,7 +53,7 @@ impl Live {
                 i += 1;
                 continue;
             }
-            blocks.push(self.rendered(i, &self.segments[i], settings));
+            blocks.push(self.rendered(i, &self.segments[i], settings, note_dir));
             i += 1;
         }
         blocks
@@ -112,8 +121,9 @@ impl Live {
         index: usize,
         seg: &'a Segment,
         settings: markdown::Settings,
+        note_dir: Option<&PathBuf>,
     ) -> Element<'a, Msg> {
-        let body = self.segment_body(seg, settings);
+        let body = self.segment_body(seg, settings, note_dir);
         let indent = seg.indent as f32 * TEXT_SIZE * 0.5;
         mouse_area(
             container(body)
@@ -131,6 +141,7 @@ impl Live {
         &'a self,
         seg: &'a Segment,
         settings: markdown::Settings,
+        note_dir: Option<&PathBuf>,
     ) -> Element<'a, Msg> {
         if let Some(body) = blank_body(seg) {
             return body;
@@ -146,6 +157,7 @@ impl Live {
             settings,
             &Viewer {
                 line: seg.lines.start,
+                note_dir: note_dir.cloned(),
             },
         )
     }
@@ -214,6 +226,7 @@ fn command_binding(key_press: &KeyPress) -> Option<Binding<Msg>> {
             Some(Binding::Custom(Msg::Redo))
         }
         Key::Character("z" | "Z") => Some(Binding::Custom(Msg::Undo)),
+        Key::Character("v") if !key_press.modifiers.alt() => Some(Binding::Custom(Msg::Paste)),
         _ => None,
     }
 }
@@ -298,11 +311,34 @@ fn dim_ink(theme: &Theme) -> text::Style {
 struct Viewer {
     /// Document line this segment starts at (for toggling tasks).
     line: usize,
+    /// Folder the open note lives in. Image paths are relative to it.
+    note_dir: Option<PathBuf>,
 }
 
 impl<'a> markdown::Viewer<'a, Msg> for Viewer {
     fn on_link_click(url: markdown::Uri) -> Msg {
         Msg::Link(url)
+    }
+
+    fn image(
+        &self,
+        settings: markdown::Settings,
+        url: &'a markdown::Uri,
+        _title: &'a str,
+        alt: &markdown::Text,
+    ) -> Element<'a, Msg> {
+        let Some(path) = self
+            .note_dir
+            .as_deref()
+            .and_then(|dir| images::image_path(dir, url))
+        else {
+            return missing_image(settings, alt);
+        };
+        image(image::Handle::from_path(path))
+            .width(images::IMAGE_WIDTH)
+            .height(images::IMAGE_HEIGHT)
+            .content_fit(ContentFit::Contain)
+            .into()
     }
 
     fn heading(
@@ -340,6 +376,14 @@ impl<'a> markdown::Viewer<'a, Msg> for Viewer {
         .padding([0.0, settings.spacing.0])
         .into()
     }
+}
+
+fn missing_image(settings: markdown::Settings, alt: &markdown::Text) -> Element<'static, Msg> {
+    let spans = alt.spans(settings.style);
+    container(rich_text(spans).on_link_click(Msg::Link))
+        .padding(settings.spacing.0)
+        .style(container::rounded_box)
+        .into()
 }
 
 fn point_marker(settings: markdown::Settings) -> Element<'static, Msg> {

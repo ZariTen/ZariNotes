@@ -50,6 +50,8 @@ pub enum Msg {
     ToggleMode,
     Undo,
     Redo,
+    /// Ctrl+V. The app checks the clipboard for an image before pasting text.
+    Paste,
     /// Left button released. Ends a drag selection.
     DragEnd,
     /// Latest modifier state, so shift-click can extend a selection.
@@ -75,6 +77,8 @@ pub enum Outcome {
     Link(String),
     Undo,
     Redo,
+    /// Ctrl+V. The app checks the clipboard for an image before pasting text.
+    Paste,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -177,6 +181,7 @@ impl Live {
             Msg::ToggleMode => (Task::none(), Outcome::ToggleMode),
             Msg::Undo => (Task::none(), Outcome::Undo),
             Msg::Redo => (Task::none(), Outcome::Redo),
+            Msg::Paste => (Task::none(), Outcome::Paste),
             Msg::DragEnd => self.drag_end(),
             Msg::Modifiers(modifiers) => {
                 self.shift = modifiers.shift();

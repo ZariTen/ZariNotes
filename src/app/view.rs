@@ -50,7 +50,10 @@ impl App {
 
     fn editor_pane(&self) -> Element<'_, Message> {
         match &self.doc {
-            Some(Doc::Live(live)) => live_editor(live, self.appearance),
+            Some(Doc::Live(live)) => {
+                let note_dir = self.note_dir();
+                live_editor(live, self.appearance, note_dir.as_deref())
+            }
             Some(Doc::Source(content)) => source_editor(content),
             None => empty_editor(),
         }
@@ -171,9 +174,13 @@ impl App {
     }
 }
 
-fn live_editor(live: &Live, appearance: Appearance) -> Element<'_, Message> {
+fn live_editor<'a>(
+    live: &'a Live,
+    appearance: Appearance,
+    note_dir: Option<&std::path::Path>,
+) -> Element<'a, Message> {
     let theme = theme::iced(appearance);
-    live.view(&theme).map(Message::Live)
+    live.view(&theme, note_dir).map(Message::Live)
 }
 
 fn source_editor(content: &Content) -> Element<'_, Message> {
@@ -225,6 +232,7 @@ pub(super) fn shortcut(key: keyboard::Key<&str>, modifiers: Modifiers) -> Option
         Key::Character("z" | "Z") if modifiers.shift() => Some(Message::Redo),
         Key::Character("y" | "Y") if !modifiers.shift() => Some(Message::Redo),
         Key::Character("z" | "Z") => Some(Message::Undo),
+        Key::Character("v") if !modifiers.alt() => Some(Message::Paste),
         _ => None,
     }
 }
