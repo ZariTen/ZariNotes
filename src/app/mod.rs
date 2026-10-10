@@ -4,7 +4,6 @@ mod document;
 mod history;
 mod paste;
 mod sidebar;
-mod spot;
 mod style;
 mod view;
 
@@ -342,7 +341,11 @@ impl App {
     }
 
     fn edit_live(&mut self, msg: live::Msg) -> Task<Message> {
-        let input = live_input(&msg, self.live_has_selection());
+        let input = if matches!(msg, live::Msg::DragEnd) && self.live_is_resizing() {
+            history::Input::Edit(history::EditKind::Other)
+        } else {
+            live_input(&msg, self.live_has_selection())
+        };
         let (task, outcome) = self.run_live(msg, input);
         self.finish_live(task, outcome)
     }
@@ -389,6 +392,13 @@ impl App {
         }
     }
 
+    fn live_is_resizing(&self) -> bool {
+        match &self.doc {
+            Some(Doc::Live(live)) => live.is_resizing(),
+            _ => false,
+        }
+    }
+
     fn subscription(&self) -> Subscription<Message> {
         // Shortcuts when no editor is focused (the editors handle their own bindings).
         // Pointer events let live preview extend a selection past the active line.
@@ -401,6 +411,9 @@ impl App {
             }),
             event::listen_with(live_pointer),
         ];
+        if self.live_is_resizing() {
+            parts.push(event::listen_with(live_resize));
+        }
         // Escape closes the create menu even when a text field already handled the key.
         if self.create.is_some() {
             parts.push(event::listen_with(dismiss_on_escape));
@@ -462,6 +475,15 @@ fn live_pointer(
             keyboard::Event::KeyPressed { modifiers, .. }
             | keyboard::Event::KeyReleased { modifiers, .. },
         ) => Some(Message::Live(live::Msg::Modifiers(modifiers))),
+        _ => None,
+    }
+}
+
+fn live_resize(event: Event, _status: event::Status, _window: iced::window::Id) -> Option<Message> {
+    match event {
+        Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            Some(Message::Live(live::Msg::ResizeMove(position.x)))
+        }
         _ => None,
     }
 }

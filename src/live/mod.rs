@@ -58,6 +58,15 @@ pub enum Msg {
     Modifiers(Modifiers),
     /// Pointer moved over the raw editor while a drag is in progress.
     EditorDrag(Point),
+    /// Left press on an image's corner handle. `x` is the window point.
+    ResizeStart {
+        line: usize,
+        url: String,
+        width: f32,
+        x: f32,
+    },
+    /// Pointer moved while a corner drag is in progress. `x` is the window point.
+    ResizeMove(f32),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,6 +125,8 @@ pub struct Live {
     shift: bool,
     /// The editor just hit-tested a drag. The fallback mapper should yield.
     native_drag: bool,
+    /// Corner drag in progress. The width is written into the note on release.
+    resize: Option<Resize>,
 }
 
 impl Live {
@@ -134,6 +145,7 @@ impl Live {
             dragging: false,
             shift: false,
             native_drag: false,
+            resize: None,
         };
         live.rebuild();
         let task = live.set_cursor(cursor);
@@ -155,6 +167,10 @@ impl Live {
 
     pub fn has_selection(&self) -> bool {
         self.editor.selection().is_some()
+    }
+
+    pub fn is_resizing(&self) -> bool {
+        self.resize.is_some()
     }
 
     pub fn focus(&self) -> Task<Msg> {
@@ -188,6 +204,13 @@ impl Live {
                 (Task::none(), Outcome::None)
             }
             Msg::EditorDrag(point) => self.on_editor_drag(point, native_drag),
+            Msg::ResizeStart {
+                line,
+                url,
+                width,
+                x,
+            } => self.start_resize(line, url, width, x),
+            Msg::ResizeMove(x) => self.resize_to(x),
         }
     }
 
@@ -281,6 +304,15 @@ impl Live {
     }
 
     fn drag_end(&mut self) -> (Task<Msg>, Outcome) {
+        if let Some(resize) = self.resize.take() {
+            let changed = self.commit_resize(&resize);
+            let outcome = if changed {
+                Outcome::Changed
+            } else {
+                Outcome::None
+            };
+            return (Task::none(), outcome);
+        }
         let was_dragging = self.dragging;
         self.dragging = false;
         if !was_dragging {
@@ -300,6 +332,78 @@ impl Live {
         }
         (self.extend_to(self.point_in_editor(point)), Outcome::None)
     }
+
+    fn start_resize(
+        &mut self,
+        line: usize,
+        url: String,
+        width: f32,
+        x: f32,
+    ) -> (Task<Msg>, Outcome) {
+        self.resize = Some(Resize {
+            line,
+            url,
+            start_x: x,
+            start_width: width,
+            width,
+        });
+        (Task::none(), Outcome::None)
+    }
+
+    fn resize_to(&mut self, x: f32) -> (Task<Msg>, Outcome) {
+        let Some(resize) = &mut self.resize else {
+            return (Task::none(), Outcome::None);
+        };
+        let next = resize.start_width + (x - resize.start_x);
+        resize.width = next.clamp(
+            crate::images::MIN_IMAGE_WIDTH,
+            crate::images::MAX_IMAGE_WIDTH,
+        );
+        (Task::none(), Outcome::None)
+    }
+
+    /// Write the dragged width into the image link. Does not move the cursor.
+    fn commit_resize(&mut self, resize: &Resize) -> bool {
+        let width = resize.width.round() as u32;
+        if (width as f32 - resize.start_width.round()).abs() < 0.5 {
+            return false;
+        }
+        let Some(index) = self
+            .segments
+            .iter()
+            .position(|seg| seg.lines.start == resize.line)
+        else {
+            return false;
+        };
+        let range = self.segments[index].lines.clone();
+        let mut changed = false;
+        for i in range {
+            let Some(line) = self.lines.get(i) else {
+                continue;
+            };
+            let Some(next) = crate::images::set_image_width(line, &resize.url, width) else {
+                continue;
+            };
+            if next != *line {
+                self.lines[i] = next;
+                changed = true;
+            }
+        }
+        if changed {
+            self.rebuild();
+        }
+        changed
+    }
+}
+
+/// A corner drag that has not been written into the note yet.
+#[derive(Debug, Clone)]
+struct Resize {
+    line: usize,
+    url: String,
+    start_x: f32,
+    start_width: f32,
+    width: f32,
 }
 
 fn flip_task_box(line: &mut String) {

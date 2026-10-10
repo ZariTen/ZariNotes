@@ -8,14 +8,16 @@ use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::widget::text_editor::{Binding, KeyPress};
 use iced::widget::{
     checkbox, column, container, image, markdown, mouse_area, rich_text, row, scrollable, space,
-    text, text_editor,
+    stack, text, text_editor,
 };
 use iced::{Border, Color, ContentFit, Element, Fill, Font, Padding, Theme, mouse};
 
 use super::split::continue_list;
 use super::{EDITOR_ID, Kind, LINE_HEIGHT, Live, Msg, Nav, SCROLL_ID, Segment, TEXT_SIZE};
 use crate::highlight;
+use crate::icons;
 use crate::images;
+use crate::theme;
 
 impl Live {
     pub fn view<'a>(&'a self, theme: &Theme, note_dir: Option<&Path>) -> Element<'a, Msg> {
@@ -133,7 +135,11 @@ impl Live {
         .on_press(Msg::Activate(index))
         .on_release(Msg::DragEnd)
         .on_move(move |point| Msg::Hover(index, point))
-        .interaction(mouse::Interaction::Text)
+        .interaction(if self.resize.is_some() {
+            mouse::Interaction::ResizingDiagonallyDown
+        } else {
+            mouse::Interaction::Text
+        })
         .into()
     }
 
@@ -158,6 +164,7 @@ impl Live {
             &Viewer {
                 line: seg.lines.start,
                 note_dir: note_dir.cloned(),
+                drag: self.resize.clone(),
             },
         )
     }
@@ -313,6 +320,8 @@ struct Viewer {
     line: usize,
     /// Folder the open note lives in. Image paths are relative to it.
     note_dir: Option<PathBuf>,
+    /// Corner drag, if one is in progress. The picture uses this width until release.
+    drag: Option<super::Resize>,
 }
 
 impl<'a> markdown::Viewer<'a, Msg> for Viewer {
@@ -334,11 +343,20 @@ impl<'a> markdown::Viewer<'a, Msg> for Viewer {
         else {
             return missing_image(settings, alt);
         };
-        image(image::Handle::from_path(path))
-            .width(images::IMAGE_WIDTH)
-            .height(images::IMAGE_HEIGHT)
-            .content_fit(ContentFit::Contain)
-            .into()
+        let width = self.display_width(url);
+        let picture = image(image::Handle::from_path(path))
+            .width(width)
+            .content_fit(ContentFit::Contain);
+        stack![
+            picture,
+            container(corner_handle(self.line, url, width))
+                .width(width)
+                .height(Fill)
+                .align_x(iced::Right)
+                .align_y(iced::Bottom)
+                .padding(2),
+        ]
+        .into()
     }
 
     fn heading(
@@ -384,6 +402,54 @@ fn missing_image(settings: markdown::Settings, alt: &markdown::Text) -> Element<
         .padding(settings.spacing.0)
         .style(container::rounded_box)
         .into()
+}
+
+impl Viewer {
+    fn display_width(&self, url: &str) -> f32 {
+        if let Some(drag) = self.drag_for(url) {
+            return drag.width;
+        }
+        images::display_width(images::image_width(url))
+    }
+
+    fn drag_for(&self, url: &str) -> Option<&super::Resize> {
+        self.drag
+            .as_ref()
+            .filter(|drag| drag.line == self.line && images::same_image(&drag.url, url))
+    }
+}
+
+fn corner_handle(line: usize, url: &str, width: f32) -> Element<'static, Msg> {
+    let url = url.to_owned();
+    crate::spot::press_at(grip_chip(), move |at| Msg::ResizeStart {
+        line,
+        url: url.clone(),
+        width,
+        x: at.x,
+    })
+}
+
+fn grip_chip() -> Element<'static, Msg> {
+    container(icons::resize_corner())
+        .width(20)
+        .height(20)
+        .align_x(iced::Center)
+        .align_y(iced::Center)
+        .style(grip_style)
+        .into()
+}
+
+fn grip_style(theme: &Theme) -> container::Style {
+    let look = theme::tokens_of(theme);
+    container::Style {
+        background: Some(look.raised.scale_alpha(0.94).into()),
+        border: Border {
+            color: look.border_strong,
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    }
 }
 
 fn point_marker(settings: markdown::Settings) -> Element<'static, Msg> {

@@ -9,6 +9,7 @@ mod highlight;
 mod icons;
 mod images;
 mod live;
+mod spot;
 mod theme;
 mod tree;
 

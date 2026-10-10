@@ -8,7 +8,6 @@ use iced::widget::{
 };
 use iced::{Element, Fill, Font, Padding, Point, Rectangle, Vector};
 
-use super::spot::spot;
 use super::style::{
     field_style, icon_button, line, menu_card, menu_danger_style, menu_item_style, rounded_danger,
     rounded_primary, rounded_subtle, row_label, tree_button,
@@ -17,6 +16,7 @@ use super::{
     App, CREATE_NAME_ID, Clicked, CreateKind, CreatePrompt, CreateStep, LABEL, MEDIUM, Message,
 };
 use crate::icons;
+use crate::spot::spot;
 use crate::theme;
 use crate::tree::Dir;
 

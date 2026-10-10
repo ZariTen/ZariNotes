@@ -1,7 +1,7 @@
-//! Right-click that also reports where the cursor was.
+//! Press that also reports where the cursor was.
 //!
-//! `mouse_area`'s right-click message has no position, so a popup cannot be
-//! placed at the pointer without this wrapper.
+//! `mouse_area`'s press message has no position, so a popup or a corner drag
+//! cannot start from the pointer without this wrapper.
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
@@ -10,6 +10,7 @@ use iced::advanced::{Clipboard, Shell, overlay};
 use iced::mouse;
 use iced::{Element, Event, Length, Point, Rectangle, Size, Vector};
 
+/// Right-click. The sidebar popup is placed at the reported point.
 pub fn spot<'a, Message, Theme, Renderer>(
     content: impl Into<Element<'a, Message, Theme, Renderer>>,
     on_right: impl Fn(Point) -> Message + 'a,
@@ -19,15 +20,51 @@ where
     Theme: 'a,
     Renderer: renderer::Renderer + 'a,
 {
+    at(content, mouse::Button::Right, None, on_right)
+}
+
+/// Left-click. Used by the image corner handle.
+pub fn press_at<'a, Message, Theme, Renderer>(
+    content: impl Into<Element<'a, Message, Theme, Renderer>>,
+    on_press: impl Fn(Point) -> Message + 'a,
+) -> Element<'a, Message, Theme, Renderer>
+where
+    Message: 'a,
+    Theme: 'a,
+    Renderer: renderer::Renderer + 'a,
+{
+    at(
+        content,
+        mouse::Button::Left,
+        Some(mouse::Interaction::ResizingDiagonallyDown),
+        on_press,
+    )
+}
+
+fn at<'a, Message, Theme, Renderer>(
+    content: impl Into<Element<'a, Message, Theme, Renderer>>,
+    button: mouse::Button,
+    interaction: Option<mouse::Interaction>,
+    on_press: impl Fn(Point) -> Message + 'a,
+) -> Element<'a, Message, Theme, Renderer>
+where
+    Message: 'a,
+    Theme: 'a,
+    Renderer: renderer::Renderer + 'a,
+{
     Element::new(Spot {
         content: content.into(),
-        on_right: Box::new(on_right),
+        button,
+        interaction,
+        on_press: Box::new(on_press),
     })
 }
 
 struct Spot<'a, Message, Theme, Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
-    on_right: Box<dyn Fn(Point) -> Message + 'a>,
+    button: mouse::Button,
+    interaction: Option<mouse::Interaction>,
+    on_press: Box<dyn Fn(Point) -> Message + 'a>,
 }
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
@@ -98,16 +135,16 @@ where
         if shell.is_event_captured() {
             return;
         }
-        let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) = event else {
+        let Event::Mouse(mouse::Event::ButtonPressed(button)) = event else {
             return;
         };
-        if !cursor.is_over(layout.bounds()) {
+        if *button != self.button || !cursor.is_over(layout.bounds()) {
             return;
         }
         let Some(at) = cursor.position() else {
             return;
         };
-        shell.publish((self.on_right)(at));
+        shell.publish((self.on_press)(at));
         shell.capture_event();
     }
 
@@ -119,6 +156,11 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
+        if let Some(interaction) = self.interaction
+            && cursor.is_over(layout.bounds())
+        {
+            return interaction;
+        }
         self.content.as_widget().mouse_interaction(
             &tree.children[0],
             layout,

@@ -4,8 +4,6 @@
 
 ZariNotes is an offline Markdown writer. It is free software, written in Rust with [iced](https://iced.rs). Notes stay in a folder on your computer. The license is GPL-3.0-or-later.
 
-Paste an image into a note with Ctrl+V. It is saved in a hidden `.images` folder next to that note, and live preview draws it at 480×320. On Wayland this needs `wl-paste` (`wl-clipboard`); on X11, `xclip`. A Nix install includes both.
-
 ## Install
 
 Linux. `./install.sh` builds the release binary and installs it, the desktop entry, and the icon under `~/.local` (no root). `~/.local/bin` must be on `PATH`. System-wide: `sudo PREFIX=/usr ./install.sh`. Log out and back in if the launcher does not show the new entry.

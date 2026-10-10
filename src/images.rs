@@ -2,16 +2,21 @@
 //!
 //! iced's clipboard only carries text, so an image paste is read with
 //! `wl-paste` (Wayland) or `xclip` (X11). The bytes go in a hidden `.images`
-//! folder beside the note. The preview draws every local image at one size.
+//! folder beside the note. A drag stores the display width on the link
+//! (`![](.images/name.png?w=320)`). The file lookup ignores `?` and `#`.
+//! The image widget keeps the height in ratio; a drag only changes the width.
 
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Display size of a rendered image. Not the file's pixel size.
+/// Default display width when the note has not set one.
 pub const IMAGE_WIDTH: f32 = 480.0;
-pub const IMAGE_HEIGHT: f32 = 320.0;
+/// Smallest width a corner drag can set.
+pub const MIN_IMAGE_WIDTH: f32 = 64.0;
+/// Largest width a corner drag can set. Stays inside the note column.
+pub const MAX_IMAGE_WIDTH: f32 = 760.0;
 
 const DIR_NAME: &str = ".images";
 
@@ -366,6 +371,124 @@ fn classify(status: std::process::ExitStatus, stdout: Vec<u8>) -> RunBytes {
     RunBytes::Failed
 }
 
+/// Path part of an image URL. `?w=` and a fragment are not the file name.
+pub fn image_key(url: &str) -> &str {
+    url.split(['?', '#']).next().unwrap_or(url)
+}
+
+/// Display width stored on an image URL, in pixels. `None` if the note has not set one.
+pub fn image_width(url: &str) -> Option<f32> {
+    let query = url.split_once('?')?.1;
+    let query = query.split('#').next().unwrap_or(query);
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if key != "w" {
+            continue;
+        }
+        let width: u32 = value.parse().ok()?;
+        if width > 0 {
+            return Some(width as f32);
+        }
+    }
+    None
+}
+
+/// Whether two markdown destinations point at the same file.
+pub fn same_image(dest: &str, url: &str) -> bool {
+    image_key(&percent_decode(dest)) == image_key(&percent_decode(url))
+}
+
+/// Write `?w=` onto every image in `line` that points at `url`.
+///
+/// `None` if that image is not on the line. An unchanged line still returns
+/// `Some` when the image was found, so a no-op drag can be told from a miss.
+pub fn set_image_width(line: &str, url: &str, width: u32) -> Option<String> {
+    if width == 0 {
+        return None;
+    }
+    let spans = image_dests(line);
+    if !spans
+        .iter()
+        .any(|&(start, end)| same_image(&line[start..end], url))
+    {
+        return None;
+    }
+    let mut out = line.to_owned();
+    for (start, end) in spans.into_iter().rev() {
+        if !same_image(&line[start..end], url) {
+            continue;
+        }
+        out.replace_range(start..end, &with_width(&line[start..end], width));
+    }
+    Some(out)
+}
+
+fn with_width(dest: &str, width: u32) -> String {
+    let fragment = dest.split_once('#').map(|(_, rest)| rest);
+    let path = image_key(dest);
+    match fragment {
+        Some(fragment) => format!("{path}?w={width}#{fragment}"),
+        None => format!("{path}?w={width}"),
+    }
+}
+
+/// Byte ranges of image destinations in `line` (`![](dest)` and `![](<dest>)`).
+fn image_dests(line: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(rel) = line[at..].find("![") {
+        let bang = at + rel;
+        let Some((start, end, after)) = dest_after_bang(line, bang) else {
+            at = bang + 2;
+            continue;
+        };
+        out.push((start, end));
+        at = after;
+    }
+    out
+}
+
+fn dest_after_bang(line: &str, bang: usize) -> Option<(usize, usize, usize)> {
+    let after_bang = bang + 2;
+    let rest = line.get(after_bang..)?;
+    let close = rest.find("](")?;
+    let dest_at = after_bang + close + 2;
+    let (start, end) = dest_span(line, dest_at)?;
+    let after = line[end..]
+        .find(')')
+        .map(|rel| end + rel + 1)
+        .unwrap_or(end);
+    Some((start, end, after))
+}
+
+fn dest_span(line: &str, dest_at: usize) -> Option<(usize, usize)> {
+    let bytes = line.as_bytes();
+    if dest_at >= bytes.len() {
+        return None;
+    }
+    if bytes[dest_at] == b'<' {
+        let end = line[dest_at + 1..].find('>')? + dest_at + 1;
+        return Some((dest_at + 1, end));
+    }
+    let mut end = dest_at;
+    while end < bytes.len() && !bytes[end].is_ascii_whitespace() && bytes[end] != b')' {
+        end += 1;
+    }
+    if end == dest_at {
+        return None;
+    }
+    Some((dest_at, end))
+}
+
+/// Width to draw. The image widget derives the height.
+pub fn display_width(stored: Option<f32>) -> f32 {
+    stored
+        .unwrap_or(IMAGE_WIDTH)
+        .clamp(MIN_IMAGE_WIDTH, MAX_IMAGE_WIDTH)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -373,8 +496,8 @@ mod tests {
     use iced::widget::markdown;
 
     use super::{
-        ImageBytes, classify, copied_image_file, image_path, offered_image_type, paste_snippet,
-        save_image,
+        ImageBytes, classify, copied_image_file, display_width, image_path, image_width,
+        offered_image_type, paste_snippet, save_image, set_image_width,
     };
 
     #[test]
@@ -425,6 +548,10 @@ mod tests {
         std::fs::write(&file, b"png").unwrap();
 
         assert_eq!(image_path(&dir, ".images/shot.png"), Some(file.clone()));
+        assert_eq!(
+            image_path(&dir, ".images/shot.png?w=240"),
+            Some(file.clone())
+        );
         assert_eq!(image_path(&dir, ".images/my%20shot.png"), None);
         std::fs::write(dir.join(".images/my shot.png"), b"png").unwrap();
         assert_eq!(
@@ -503,5 +630,44 @@ mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("zarinotes-images-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn width_query_round_trips_and_keeps_the_other_image() {
+        assert_eq!(image_width(".images/a.png?w=320"), Some(320.0));
+        assert_eq!(image_width(".images/a.png?w=320#cap"), Some(320.0));
+        assert_eq!(image_width(".images/a.png"), None);
+        assert_eq!(image_width(".images/a.png?w=0"), None);
+        assert_eq!(display_width(None), 480.0);
+        assert_eq!(display_width(Some(200.0)), 200.0);
+        assert_eq!(display_width(Some(10.0)), 64.0);
+
+        let line = "see ![](.images/a.png) and ![cap](.images/b.png \"title\")";
+        assert_eq!(
+            set_image_width(line, ".images/a.png", 200).as_deref(),
+            Some("see ![](.images/a.png?w=200) and ![cap](.images/b.png \"title\")")
+        );
+        assert_eq!(
+            set_image_width("![](<.images/a.png>)", ".images/a.png", 80).as_deref(),
+            Some("![](<.images/a.png?w=80>)")
+        );
+        assert_eq!(
+            set_image_width("![](.images/a.png?w=10#x)", ".images/a.png?w=10", 40).as_deref(),
+            Some("![](.images/a.png?w=40#x)")
+        );
+        assert_eq!(
+            set_image_width("[link](.images/a.png)", ".images/a.png", 40),
+            None
+        );
+        assert_eq!(
+            set_image_width("![](.images/my%20shot.png)", ".images/my shot.png", 90).as_deref(),
+            Some("![](.images/my%20shot.png?w=90)")
+        );
+
+        let items: Vec<_> = markdown::parse("![](.images/a.png?w=320)").collect();
+        assert!(matches!(
+            items.as_slice(),
+            [markdown::Item::Image { url, .. }] if url == ".images/a.png?w=320"
+        ));
     }
 }

@@ -17,6 +17,9 @@ const CHEVRON_DOWN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 
 const REFRESH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>"#;
 
+/// Corner pull. Sits on the bottom-right edge of a picture.
+const RESIZE_CORNER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 20h6v-6"/><path d="m20 20-6-6"/></svg>"#;
+
 static FOLDER_H: LazyLock<svg::Handle> =
     LazyLock::new(|| svg::Handle::from_memory(FOLDER.as_bytes()));
 static FOLDER_OPEN_H: LazyLock<svg::Handle> =
@@ -29,6 +32,8 @@ static CHEVRON_DOWN_H: LazyLock<svg::Handle> =
     LazyLock::new(|| svg::Handle::from_memory(CHEVRON_DOWN.as_bytes()));
 static REFRESH_H: LazyLock<svg::Handle> =
     LazyLock::new(|| svg::Handle::from_memory(REFRESH.as_bytes()));
+static RESIZE_CORNER_H: LazyLock<svg::Handle> =
+    LazyLock::new(|| svg::Handle::from_memory(RESIZE_CORNER.as_bytes()));
 
 fn icon<'a>(handle: &svg::Handle, size: f32, color: impl Fn(&Theme) -> Color + 'a) -> Svg<'a> {
     Svg::new(handle.clone())
@@ -101,4 +106,9 @@ pub fn open_folder<'a>() -> Svg<'a> {
 /// Header action: rescan the workspace.
 pub fn refresh<'a>() -> Svg<'a> {
     icon(&REFRESH_H, 15.0, ink(0.9))
+}
+
+/// Pull tab for the bottom-right corner of an image.
+pub fn resize_corner<'a>() -> Svg<'a> {
+    icon(&RESIZE_CORNER_H, 12.0, ink(0.9))
 }
