@@ -10,41 +10,18 @@
 //! panel that changed on every keystroke would thrash, and other notes can only
 //! see what is on disk anyway.
 
+mod preview;
+mod wiki;
+
 use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use crate::tree::Dir;
 
-/// One outgoing link, as written in a note.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mention {
-    /// Path or note name inside the brackets or Markdown destination, without a
-    /// heading. Empty when the link is only a heading in the same note.
-    pub target: String,
-    /// Display text after `|` in a wikilink. Markdown links leave this empty;
-    /// their label is the link text, which is not what we match on.
-    pub alias: Option<String>,
-    /// Heading after `#`, so `[[Note#Heading]]` can be told apart from a link
-    /// to the note itself. Not lowercased; matching headings is a later step.
-    pub heading: Option<String>,
-    /// `![[note]]` rather than `[[note]]`.
-    pub embed: bool,
-    /// Line the link was written on, for the excerpt in the backlink panel.
-    pub line: usize,
-    /// The source line, trimmed, captured when the note was indexed.
-    pub excerpt: String,
-    /// Where the link points, if the vault had exactly one match when indexed.
-    /// Wikilinks match a unique name anywhere. Markdown links are relative to
-    /// the note that contains them.
-    pub dest: Option<PathBuf>,
-    kind: LinkKind,
-}
+use wiki::{LinkKind, note_key, normalize_key, percent_decode, split_heading};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LinkKind {
-    Wiki,
-    Markdown,
-}
+pub use preview::rewrite_wikilinks;
+pub use wiki::Mention;
 
 /// A note that points at the note currently open.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +171,7 @@ impl Index {
     }
 
     fn mentions_in(&self, from: &Path, text: &str) -> Vec<Mention> {
-        let mut mentions = parse_mentions(text);
+        let mut mentions = wiki::parse_mentions(text);
         for mention in &mut mentions {
             mention.dest = self.destination(from, mention);
         }
@@ -295,12 +272,12 @@ impl Index {
 
     /// Whether `url` is a wikilink written into Markdown as `zari-wiki:…`.
     pub fn is_wiki_url(url: &str) -> bool {
-        url.starts_with(WIKI_SCHEME)
+        url.starts_with(wiki::WIKI_SCHEME)
     }
 
     /// Turn a rewritten preview link back into a [`Resolved`] target.
     pub fn resolve_wiki_url(&self, url: &str) -> Option<Resolved> {
-        let raw = url.strip_prefix(WIKI_SCHEME)?;
+        let raw = url.strip_prefix(wiki::WIKI_SCHEME)?;
         let target = percent_decode(raw);
         Some(self.resolve(&target))
     }
@@ -326,396 +303,6 @@ fn unique_dests(mentions: &[Mention]) -> Vec<PathBuf> {
     targets
 }
 
-/// Scan the folder and index its links. Run off the UI thread.
-pub fn scan(workspace: &Path) -> Scanned {
-    let tree = Dir::scan(workspace);
-    let index = Index::build(workspace, &tree);
-    Scanned { tree, index }
-}
-
-const WIKI_SCHEME: &str = "zari-wiki:";
-
-/// Rewrite `[[links]]` into Markdown links the live preview can click.
-///
-/// The preview parser does not know wikilinks. A link to `zari-wiki:Note`
-/// round-trips through the viewer and is resolved on click. Code spans and
-/// fenced blocks are left alone — a wikilink in a sample is not a link.
-pub fn rewrite_wikilinks(source: &str) -> String {
-    let mut out = String::with_capacity(source.len());
-    let mut in_fence = false;
-    let mut lines = source.split('\n');
-    if let Some(first) = lines.next() {
-        in_fence = rewrite_outside_fence(first, in_fence, &mut out);
-    }
-    for line in lines {
-        out.push('\n');
-        in_fence = rewrite_outside_fence(line, in_fence, &mut out);
-    }
-    out
-}
-
-/// Copy a fenced line as-is. Otherwise rewrite wikilinks, and report whether
-/// the next line is inside a fence.
-fn rewrite_outside_fence(line: &str, in_fence: bool, out: &mut String) -> bool {
-    if is_fence(line) {
-        out.push_str(line);
-        return !in_fence;
-    }
-    if in_fence {
-        out.push_str(line);
-        return true;
-    }
-    rewrite_line(line, out);
-    false
-}
-
-fn rewrite_line(line: &str, out: &mut String) {
-    let mut rest = line;
-    let mut inline_code = false;
-    while !rest.is_empty() {
-        if rest.starts_with('\\') {
-            // A backslash hides the next character, including a `[` that would
-            // otherwise start a wikilink. Copy both through unchanged.
-            out.push('\\');
-            rest = &rest[1..];
-            if let Some(ch) = rest.chars().next() {
-                out.push(ch);
-                rest = &rest[ch.len_utf8()..];
-            }
-            continue;
-        }
-        if rest.starts_with('`') {
-            inline_code = !inline_code;
-            out.push('`');
-            rest = &rest[1..];
-            continue;
-        }
-        if !inline_code && let Some((link, after)) = take_wikilink(rest) {
-            if is_asset_embed(&link) || wiki_target_blank(&link) {
-                let taken = rest.len() - after.len();
-                out.push_str(&rest[..taken]);
-            } else {
-                push_rewritten(out, &link);
-            }
-            rest = after;
-            continue;
-        }
-        let ch = rest.chars().next().unwrap();
-        out.push(ch);
-        rest = &rest[ch.len_utf8()..];
-    }
-}
-
-struct Wiki<'a> {
-    embed: bool,
-    inner: &'a str,
-}
-
-fn take_wikilink(text: &str) -> Option<(Wiki<'_>, &str)> {
-    let embed = text.starts_with("![[");
-    if !embed && !text.starts_with("[[") {
-        return None;
-    }
-    let open = if embed { 3 } else { 2 };
-    let close = text[open..].find("]]")?;
-    let inner = &text[open..open + close];
-    if inner.contains('\n') || inner.contains("[[") {
-        return None;
-    }
-    Some((Wiki { embed, inner }, &text[open + close + 2..]))
-}
-
-fn push_rewritten(out: &mut String, link: &Wiki<'_>) {
-    let (target, alias) = split_alias(link.inner);
-    let label = if alias.is_empty() {
-        display_label(target)
-    } else {
-        alias.to_owned()
-    };
-    let label = if link.embed {
-        format!("↗ {label}")
-    } else {
-        label
-    };
-    let url = format!("{WIKI_SCHEME}{}", percent_encode(link.inner));
-    out.push('[');
-    push_label(out, &label);
-    out.push_str("](");
-    out.push_str(&url);
-    out.push(')');
-}
-
-/// `[[folder/Note|shown]]` displays `shown`. Without an alias, show the file name.
-fn display_label(target: &str) -> String {
-    let (path, heading) = split_heading(target);
-    let name = path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(path.as_str())
-        .trim();
-    let name = name.strip_suffix(".md").unwrap_or(name);
-    if name.is_empty() {
-        return heading.unwrap_or_else(|| target.to_owned());
-    }
-    match heading {
-        Some(heading) => format!("{name} › {heading}"),
-        None => name.to_owned(),
-    }
-}
-
-fn push_label(out: &mut String, label: &str) {
-    for ch in label.chars() {
-        if matches!(ch, '[' | ']' | '(' | ')') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-}
-
-fn clip(text: &str, max: usize) -> String {
-    let end = text
-        .char_indices()
-        .nth(max)
-        .map(|(i, _)| i)
-        .unwrap_or(text.len());
-    if end < text.len() {
-        format!("{}…", &text[..end])
-    } else {
-        text.to_owned()
-    }
-}
-
-/// Every wikilink and every Markdown link to a note, outside code.
-fn parse_mentions(text: &str) -> Vec<Mention> {
-    let mut mentions = Vec::new();
-    let mut in_fence = false;
-    // YAML between the opening `---` and its close is not prose. A `[[link]]`
-    // there is a value, not a note reference.
-    let mut in_front_matter = false;
-    let mut started = false;
-    for (line_no, line) in text.lines().enumerate() {
-        if !started {
-            started = true;
-            if is_front_matter_mark(line) {
-                in_front_matter = true;
-                continue;
-            }
-        }
-        if in_front_matter {
-            if is_front_matter_mark(line) {
-                in_front_matter = false;
-            }
-            continue;
-        }
-        if is_fence(line) {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            continue;
-        }
-        mentions.extend(mentions_in_line(line, line_no));
-    }
-    mentions
-}
-
-fn is_front_matter_mark(line: &str) -> bool {
-    let line = line.trim_end();
-    line == "---" || line == "..."
-}
-
-fn mentions_in_line(line: &str, line_no: usize) -> Vec<Mention> {
-    let excerpt = clip(line.trim(), 96);
-    let mut mentions = Vec::new();
-    let mut rest = line;
-    let mut inline_code = false;
-    while !rest.is_empty() {
-        if rest.starts_with('\\') {
-            rest = skip_escaped(rest);
-            continue;
-        }
-        if rest.starts_with('`') {
-            inline_code = !inline_code;
-            rest = &rest[1..];
-            continue;
-        }
-        if inline_code {
-            let ch = rest.chars().next().unwrap();
-            rest = &rest[ch.len_utf8()..];
-            continue;
-        }
-        if let Some((taken, after)) = take_wikilink(rest) {
-            if let Some(mention) = mention_from_wiki(&taken, line_no, &excerpt) {
-                mentions.push(mention);
-            }
-            rest = after;
-            continue;
-        }
-        if let Some((mention, after)) = take_markdown_link(rest, line_no, &excerpt) {
-            mentions.push(mention);
-            rest = after;
-            continue;
-        }
-        let ch = rest.chars().next().unwrap();
-        rest = &rest[ch.len_utf8()..];
-    }
-    mentions
-}
-
-fn mention_from_wiki(link: &Wiki<'_>, line: usize, excerpt: &str) -> Option<Mention> {
-    if is_asset_embed(link) {
-        return None;
-    }
-    let (target, alias) = split_alias(link.inner);
-    let (path, heading) = split_heading(target);
-    if path.is_empty() && heading.is_none() {
-        return None;
-    }
-    Some(Mention {
-        target: path,
-        alias: nonempty(alias),
-        heading,
-        embed: link.embed,
-        line,
-        excerpt: excerpt.to_owned(),
-        dest: None,
-        kind: LinkKind::Wiki,
-    })
-}
-
-/// `![[pic.png]]` is an image, not a note. Leave it for the image renderer.
-fn is_asset_embed(link: &Wiki<'_>) -> bool {
-    link.embed && looks_like_asset(split_alias(link.inner).0)
-}
-
-/// `[[]]` and `[[|alias]]` name no note. Leave them as typed.
-fn wiki_target_blank(link: &Wiki<'_>) -> bool {
-    let (target, _) = split_alias(link.inner);
-    let (path, heading) = split_heading(target);
-    path.is_empty() && heading.is_none()
-}
-
-/// `[label](destination)` when `destination` looks like another note.
-///
-/// External URLs and image files are not notes. A destination with no scheme
-/// and no extension, or a `.md` extension, is.
-fn take_markdown_link<'a>(text: &'a str, line: usize, excerpt: &str) -> Option<(Mention, &'a str)> {
-    if text.starts_with('!') || !text.starts_with('[') {
-        return None;
-    }
-    let label_end = text.find("](")?;
-    let dest_start = label_end + 2;
-    let dest_end = text[dest_start..].find(')')? + dest_start;
-    let dest = text[dest_start..dest_end].trim();
-    let after = &text[dest_end + 1..];
-    let (target, heading) = markdown_note_target(dest)?;
-    Some((
-        Mention {
-            target,
-            alias: None,
-            heading,
-            embed: false,
-            line,
-            excerpt: excerpt.to_owned(),
-            dest: None,
-            kind: LinkKind::Markdown,
-        },
-        after,
-    ))
-}
-
-fn markdown_note_target(dest: &str) -> Option<(String, Option<String>)> {
-    let dest = dest.split_whitespace().next().unwrap_or(dest);
-    if dest.is_empty() || is_external(dest) {
-        return None;
-    }
-    let (path, heading) = split_heading(dest);
-    let path = path.split('?').next().unwrap_or(&path);
-    let path = percent_decode(path);
-    if path.is_empty() || looks_like_asset(&path) {
-        return None;
-    }
-    let bare = path
-        .strip_suffix(".md")
-        .unwrap_or(&path)
-        .trim_end_matches(['/', '\\']);
-    if bare.is_empty() {
-        None
-    } else {
-        Some((bare.to_owned(), heading))
-    }
-}
-
-fn looks_like_asset(path: &str) -> bool {
-    match Path::new(path).extension().and_then(|ext| ext.to_str()) {
-        Some("md") | None => false,
-        Some(_) => true,
-    }
-}
-
-fn is_external(url: &str) -> bool {
-    url.contains("://") || url.starts_with("mailto:") || url.starts_with(WIKI_SCHEME)
-}
-
-fn is_fence(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("```") || trimmed.starts_with("~~~")
-}
-
-fn skip_escaped(text: &str) -> &str {
-    let mut chars = text.chars();
-    chars.next();
-    chars.next();
-    chars.as_str()
-}
-
-fn split_alias(inner: &str) -> (&str, &str) {
-    match inner.split_once('|') {
-        Some((target, alias)) => (target.trim(), alias.trim()),
-        None => (inner.trim(), ""),
-    }
-}
-
-fn split_heading(target: &str) -> (String, Option<String>) {
-    match target.split_once('#') {
-        Some((path, heading)) => (path.trim().to_owned(), nonempty(heading.trim())),
-        None => (target.trim().to_owned(), None),
-    }
-}
-
-fn nonempty(text: &str) -> Option<String> {
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.to_owned())
-    }
-}
-
-fn note_key(path: &Path) -> String {
-    normalize_key(&path.to_string_lossy())
-}
-
-fn normalize_key(target: &str) -> String {
-    let mut out = PathBuf::new();
-    let bare = target.strip_suffix(".md").unwrap_or(target);
-    for part in Path::new(bare).components() {
-        match part {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Normal(name) => out.push(name),
-            _ => {}
-        }
-    }
-    out.components()
-        .filter_map(|part| match part {
-            Component::Normal(name) => Some(name.to_string_lossy().to_lowercase()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
 fn keys_for(notes: &[PathBuf]) -> HashMap<String, Vec<usize>> {
     let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, note) in notes.iter().enumerate() {
@@ -735,45 +322,17 @@ fn keys_for(notes: &[PathBuf]) -> HashMap<String, Vec<usize>> {
     by_key
 }
 
-fn percent_encode(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Ok(byte) =
-                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
-        {
-            out.push(byte);
-            i += 3;
-            continue;
-        }
-        if bytes[i] == b'+' {
-            out.push(b' ');
-        } else {
-            out.push(bytes[i]);
-        }
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| text.to_owned())
+/// Scan the folder and index its links. Run off the UI thread.
+pub fn scan(workspace: &Path) -> Scanned {
+    let tree = Dir::scan(workspace);
+    let index = Index::build(workspace, &tree);
+    Scanned { tree, index }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use super::*;
 
     fn index_of(notes: &[&str], bodies: &[(&str, &str)]) -> Index {
@@ -800,7 +359,7 @@ see [[Note|alias]] and [[folder/Other#Heading]]
 ```
 and [md](folder/Note.md) plus [web](https://example.com) and ![](pic.png)
 ";
-        let mentions = parse_mentions(text);
+        let mentions = wiki::parse_mentions(text);
         assert_eq!(mentions.len(), 4);
         assert_eq!(mentions[0].target, "Note");
         assert_eq!(mentions[0].alias.as_deref(), Some("alias"));
@@ -842,10 +401,7 @@ and [md](folder/Note.md) plus [web](https://example.com) and ![](pic.png)
             &["Ideas.md", "journal/Day.md", "Alone.md"],
             &[
                 ("journal/Day.md", "Wrote about [[Ideas|the idea]] today."),
-                (
-                    "Alone.md",
-                    "No mention, but [elsewhere](../Ideas.md) waits.",
-                ),
+                ("Alone.md", "No mention, but [elsewhere](../Ideas.md) waits."),
                 (
                     "Ideas.md",
                     "[[Alone]] is outgoing, not a backlink of itself.",
@@ -896,7 +452,7 @@ and [md](folder/Note.md) plus [web](https://example.com) and ![](pic.png)
     #[test]
     fn front_matter_and_image_embeds_are_not_notes() {
         let text = "---\ntitle: [[Ideas]]\n---\nsee [[Ideas]] and ![[pic.png]]\n";
-        let mentions = parse_mentions(text);
+        let mentions = wiki::parse_mentions(text);
         assert_eq!(mentions.len(), 1);
         assert_eq!(mentions[0].target, "Ideas");
         assert!(!mentions[0].embed);
