@@ -360,6 +360,15 @@ fn segment_source(lines: &[String], range: &Range<usize>, kind: Kind) -> String 
     lines[range.clone()].join("\n")
 }
 
+/// Source handed to the Markdown parser. Wikilinks become real links so the
+/// rendered line can be clicked; the editor still shows the raw `[[note]]`.
+fn parsed_source(kind: Kind, source: &str) -> String {
+    if kind == Kind::Fence || kind == Kind::FrontMatter {
+        return source.to_owned();
+    }
+    crate::links::rewrite_wikilinks(source)
+}
+
 fn cached_items(
     kind: Kind,
     source: &str,
@@ -368,9 +377,13 @@ fn cached_items(
     if kind == Kind::Blank || kind == Kind::FrontMatter {
         return Vec::new();
     }
-    cache
-        .remove(source)
-        .unwrap_or_else(|| markdown::parse(source).collect())
+    // The cache key stays the raw source. Only the parser sees the rewrite,
+    // so a line that is `[[Note]]` still round-trips, and a rebuilt segment
+    // does not parse the same line twice.
+    if let Some(items) = cache.remove(source) {
+        return items;
+    }
+    markdown::parse(&parsed_source(kind, source)).collect()
 }
 
 fn end_of_line(lines: &[String], line: usize) -> Position {

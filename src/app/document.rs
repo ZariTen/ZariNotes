@@ -10,15 +10,18 @@ use super::{
     App, CREATE_NAME_ID, Clicked, CreateKind, CreatePrompt, CreateStep, Doc, Message, Mode,
     SOURCE_EDITOR_ID,
 };
+use crate::links::{self, Resolved};
 use crate::live::Live;
-use crate::tree::Dir;
 
 impl App {
     pub(super) fn scan(&self) -> Task<Message> {
         let Some(workspace) = self.workspace.clone() else {
             return Task::none();
         };
-        Task::perform(async move { Dir::scan(&workspace) }, Message::FilesScanned)
+        Task::perform(
+            async move { links::scan(&workspace) },
+            Message::FilesScanned,
+        )
     }
 
     pub(super) fn expand_ancestors(&mut self, rel: &Path) {
@@ -182,6 +185,9 @@ impl App {
     /// Follow a link clicked in the preview: other notes open in the app,
     /// everything else goes to the system handler.
     pub(super) fn open_link(&mut self, url: &str) -> Task<Message> {
+        if links::Index::is_wiki_url(url) {
+            return self.open_wiki(url);
+        }
         if is_external_url(url) {
             return self.open_in_system(url);
         }
@@ -189,6 +195,33 @@ impl App {
             return Task::none();
         };
         self.open_workspace_note(rel)
+    }
+
+    /// A `[[wikilink]]` rewritten for the live preview.
+    ///
+    /// A heading fragment is not scrolled to yet, so it is dropped rather than
+    /// flashed in the footer — opening the note clears that footer anyway.
+    fn open_wiki(&mut self, url: &str) -> Task<Message> {
+        let Some(resolved) = self.links.resolve_wiki_url(url) else {
+            return Task::none();
+        };
+        match resolved {
+            Resolved::Note { path, .. } => self.open_workspace_note(path),
+            Resolved::Heading(_) => Task::none(),
+            Resolved::Ambiguous { target, matches } => {
+                let names = matches
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.notice = Some(format!("“{target}” matches more than one note: {names}"));
+                Task::none()
+            }
+            Resolved::Missing { target } => {
+                self.notice = Some(format!("Note not found: {target}"));
+                Task::none()
+            }
+        }
     }
 
     fn open_in_system(&mut self, url: &str) -> Task<Message> {
@@ -220,6 +253,7 @@ impl App {
         };
         match std::fs::write(workspace.join(rel), &text) {
             Ok(()) => {
+                self.links.set_note(rel, &text);
                 self.saved = Some(text);
                 self.dirty = false;
                 self.notice = None;
@@ -295,9 +329,11 @@ impl App {
         match clicked {
             Clicked::Note(path) => {
                 self.tree.remove_file(path);
+                self.links.remove(path, false);
             }
             Clicked::Folder(path) => {
                 self.tree.remove_dir(path);
+                self.links.remove(path, true);
             }
         }
     }
@@ -368,6 +404,7 @@ impl App {
         match kind {
             CreateKind::Note => {
                 self.tree.insert_file(&rel);
+                self.links.insert_empty(&rel);
                 Task::done(Message::Open(rel))
             }
             CreateKind::Folder => {

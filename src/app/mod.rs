@@ -17,7 +17,11 @@ use iced::mouse;
 use iced::widget::text_editor::{self, Action};
 use iced::{Font, Point, Subscription, Task};
 
-use crate::config::{load_appearance, load_last_workspace, save_appearance, save_last_workspace};
+use crate::config::{
+    load_appearance, load_backlinks_open, load_last_workspace, save_appearance,
+    save_backlinks_open, save_last_workspace,
+};
+use crate::links::Index;
 use crate::live::{self, Live};
 use crate::theme::{self, Appearance};
 use crate::tree::Dir;
@@ -48,6 +52,8 @@ struct App {
     workspace: Option<PathBuf>,
     /// Folder/file tree of the workspace.
     tree: Dir,
+    /// Wikilinks and Markdown note links in the workspace, and their reverse map.
+    links: Index,
     /// Workspace-relative folders currently expanded in the sidebar.
     expanded: HashSet<PathBuf>,
     /// Currently open file, relative to the workspace root.
@@ -68,6 +74,8 @@ struct App {
     /// Problem worth showing in the footer. Routine success is not stored.
     notice: Option<String>,
     appearance: Appearance,
+    /// Whether the backlink list under the editor is expanded. Kept across notes.
+    backlinks_open: bool,
 }
 
 enum Doc {
@@ -135,7 +143,7 @@ enum Message {
     PickWorkspace,
     WorkspacePicked(Option<PathBuf>),
     Refresh,
-    FilesScanned(Dir),
+    FilesScanned(crate::links::Scanned),
     ToggleDir(PathBuf),
     Open(PathBuf),
     Edit(Action),
@@ -169,6 +177,8 @@ enum Message {
         text: Option<String>,
         image_tool_missing: bool,
     },
+    /// Collapse or expand the backlink list under the editor.
+    ToggleBacklinks,
 }
 
 impl App {
@@ -176,6 +186,7 @@ impl App {
         let app = Self {
             workspace: None,
             tree: Dir::default(),
+            links: Index::default(),
             expanded: HashSet::new(),
             current: None,
             doc: None,
@@ -187,6 +198,7 @@ impl App {
             filter: String::new(),
             notice: None,
             appearance: load_appearance(),
+            backlinks_open: load_backlinks_open(),
         };
 
         // Reopen the last workspace, if it still exists.
@@ -214,8 +226,10 @@ impl App {
             Message::WorkspacePicked(None) => Task::none(),
             Message::WorkspacePicked(Some(dir)) => self.open_workspace(dir),
             Message::Refresh => self.scan(),
-            Message::FilesScanned(tree) => {
-                self.tree = tree;
+            Message::FilesScanned(scanned) => {
+                self.tree = scanned.tree;
+                self.links = scanned.index;
+                self.notice = None;
                 Task::none()
             }
             Message::ToggleDir(dir) => self.toggle_dir(dir),
@@ -256,7 +270,14 @@ impl App {
                 text,
                 image_tool_missing,
             } => self.paste_text(text, image_tool_missing),
+            Message::ToggleBacklinks => self.toggle_backlinks(),
         }
+    }
+
+    fn toggle_backlinks(&mut self) -> Task<Message> {
+        self.backlinks_open = !self.backlinks_open;
+        save_backlinks_open(self.backlinks_open);
+        Task::none()
     }
 
     fn pick_workspace(&self) -> Task<Message> {
@@ -280,6 +301,7 @@ impl App {
         self.saved = None;
         self.history.clear();
         self.tree = Dir::default();
+        self.links = Index::default();
         self.expanded.clear();
         self.filter.clear();
         self.create = None;

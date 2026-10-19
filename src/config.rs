@@ -49,3 +49,12 @@ pub(crate) fn load_appearance() -> Appearance {
 pub(crate) fn save_appearance(appearance: Appearance) {
     write_config("theme", appearance.as_str().as_bytes());
 }
+
+/// Whether the backlink list under the editor starts open. Missing means open.
+pub(crate) fn load_backlinks_open() -> bool {
+    read_config("backlinks").is_none_or(|text| text.trim() != "closed")
+}
+
+pub(crate) fn save_backlinks_open(open: bool) {
+    write_config("backlinks", if open { b"open" } else { b"closed" });
+}

@@ -1,6 +1,6 @@
 //! Sidebar and editor chrome: buttons, fields, and surfaces.
 
-use iced::widget::{button, container, text, text_editor, text_input, tooltip};
+use iced::widget::{button, column, container, text, text_editor, text_input, tooltip};
 use iced::{Border, Color, Element, Fill, Font, Padding, Shadow, Theme, Vector, border};
 
 use super::{LABEL, Message};
@@ -171,6 +171,60 @@ pub(super) fn menu_danger_style(theme: &Theme, status: button::Status) -> button
     button::Style {
         background: row_fill(look, false, status),
         text_color: look.danger,
+        border: border::rounded(6),
+        ..button::Style::default()
+    }
+}
+
+pub(super) fn backlink_row(link: crate::links::Backlink) -> Element<'static, Message> {
+    let name = link
+        .from
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| link.from.display().to_string());
+    let title = match &link.alias {
+        Some(alias) => format!("{name} · {alias}"),
+        None => name,
+    };
+    let title = if link.embed {
+        format!("{title} · embed")
+    } else {
+        title
+    };
+    let body = if link.excerpt.is_empty() {
+        column![text(title).size(13)]
+    } else {
+        column![
+            text(title).size(13),
+            text(link.excerpt).size(12).style(muted_ink),
+        ]
+        .spacing(2)
+    };
+    button(body)
+        .width(Fill)
+        .padding([4, 8])
+        .style(backlink_style)
+        .on_press(Message::Open(link.from))
+        .into()
+}
+
+fn muted_ink(theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(theme::tokens_of(theme).muted),
+    }
+}
+
+/// A full-width row that only shows a fill when hovered. Used for the
+/// backlink header, which is a disclosure, not an action.
+pub(super) fn quiet_button(theme: &Theme, status: button::Status) -> button::Style {
+    backlink_style(theme, status)
+}
+
+fn backlink_style(theme: &Theme, status: button::Status) -> button::Style {
+    let look = theme::tokens_of(theme);
+    button::Style {
+        background: row_fill(look, false, status),
+        text_color: look.ink,
         border: border::rounded(6),
         ..button::Style::default()
     }

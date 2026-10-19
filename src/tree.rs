@@ -1,7 +1,7 @@
 //! In-memory tree of a workspace's folders and Markdown files.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 /// A folder: its subfolders and the `.md` files directly inside it.
 #[derive(Debug, Clone, Default)]
@@ -93,6 +93,22 @@ impl Dir {
 
     pub fn file_count(&self) -> usize {
         self.files.len() + self.dirs.values().map(Self::file_count).sum::<usize>()
+    }
+
+    /// Every `.md` file, workspace-relative, folders first so the order is stable.
+    pub fn files(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        self.collect_files(Path::new(""), &mut out);
+        out
+    }
+
+    fn collect_files(&self, prefix: &Path, out: &mut Vec<PathBuf>) {
+        for name in &self.files {
+            out.push(prefix.join(name));
+        }
+        for (name, sub) in &self.dirs {
+            sub.collect_files(&prefix.join(name), out);
+        }
     }
 
     /// Case-insensitive substring match. An empty query matches nothing —

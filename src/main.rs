@@ -8,6 +8,7 @@ mod config;
 mod highlight;
 mod icons;
 mod images;
+mod links;
 mod live;
 mod spot;
 mod theme;

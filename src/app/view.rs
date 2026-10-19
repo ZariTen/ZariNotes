@@ -2,12 +2,12 @@
 
 use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::text_editor::{Binding, Content, KeyPress};
-use iced::widget::{button, column, container, row, text, text_editor, tooltip};
+use iced::widget::{button, column, container, row, scrollable, text, text_editor, tooltip};
 use iced::{Element, Fill, Font};
 
 use super::style::{
-    chassis, editor_style, hint, line, panel, segment, segment_track, unsaved_style, word_count,
-    words_label, writing_surface,
+    backlink_row, chassis, editor_style, hint, line, panel, segment, segment_track, unsaved_style,
+    word_count, words_label, writing_surface,
 };
 use super::{App, Doc, Message, Mode, SIDEBAR_WIDTH, SOURCE_EDITOR_ID};
 use crate::highlight;
@@ -23,10 +23,11 @@ impl App {
             .width(Fill)
             .height(Fill);
 
-        let main = column![page, self.footer()]
-            .spacing(8)
-            .width(Fill)
-            .height(Fill);
+        let mut main = column![page].spacing(8).width(Fill).height(Fill);
+        if self.current.is_some() {
+            main = main.push(self.backlinks_strip());
+        }
+        let main = main.push(self.footer());
 
         let body = row![
             container(self.sidebar())
@@ -87,6 +88,52 @@ impl App {
             .into();
         }
         text("No note open").size(12).color(look.muted).into()
+    }
+
+    /// Notes that link here. The header stays, so the list can be folded away
+    /// without losing the count. Hidden until a note is open.
+    fn backlinks_strip(&self) -> Element<'_, Message> {
+        let Some(current) = &self.current else {
+            return column![].into();
+        };
+        let links = self.links.backlinks(current);
+        let header = self.backlinks_header(links.len());
+        if links.is_empty() || !self.backlinks_open {
+            return header;
+        }
+        let rows = links.into_iter().map(|link| backlink_row(link));
+        // A popular note must not push the editor off the window.
+        column![
+            header,
+            container(scrollable(column(rows).spacing(2)))
+                .max_height(112)
+                .width(Fill),
+        ]
+        .spacing(4)
+        .width(Fill)
+        .into()
+    }
+
+    fn backlinks_header(&self, count: usize) -> Element<'_, Message> {
+        let look = theme::tokens(self.appearance);
+        let open = self.backlinks_open && count > 0;
+        let color = if count == 0 { look.muted } else { look.ink };
+        button(
+            row![
+                crate::icons::chevron(open),
+                text(backlinks_label(count))
+                    .size(12)
+                    .font(super::LABEL)
+                    .color(color),
+            ]
+            .spacing(6)
+            .align_y(iced::Center),
+        )
+        .width(Fill)
+        .padding([2, 4])
+        .style(super::style::quiet_button)
+        .on_press(Message::ToggleBacklinks)
+        .into()
     }
 
     fn save_state(&self) -> Element<'_, Message> {
@@ -199,6 +246,14 @@ fn source_editor(content: &Content) -> Element<'_, Message> {
         .height(Fill)
         .style(editor_style)
         .into()
+}
+
+fn backlinks_label(n: usize) -> String {
+    match n {
+        0 => "No notes link here".into(),
+        1 => "1 backlink".into(),
+        n => format!("{n} backlinks"),
+    }
 }
 
 fn empty_editor() -> Element<'static, Message> {
