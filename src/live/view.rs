@@ -199,8 +199,8 @@ struct CaretEdges {
 }
 
 fn editor_key(caret: &CaretEdges, line: &str, key_press: KeyPress) -> Option<Binding<Msg>> {
-    if let Some(binding) = command_binding(&key_press) {
-        return Some(binding);
+    if let Some(msg) = command(key_press.key.as_ref(), key_press.modifiers) {
+        return Some(Binding::Custom(msg));
     }
     if let Some(binding) = edge_binding(caret, &key_press) {
         return Some(binding);
@@ -216,45 +216,37 @@ fn editor_key(caret: &CaretEdges, line: &str, key_press: KeyPress) -> Option<Bin
     Binding::from_key_press(key_press)
 }
 
-fn command_binding(key_press: &KeyPress) -> Option<Binding<Msg>> {
-    if !key_press.modifiers.command() {
+/// Ctrl+S saves, Ctrl+E toggles live preview, Ctrl+Z undoes, Ctrl+Shift+Z and
+/// Ctrl+Y redo, Ctrl+V pastes. The app maps these onto its own messages, so
+/// both editors and the window share one table.
+pub fn command(key: Key<&str>, modifiers: Modifiers) -> Option<Msg> {
+    if !modifiers.command() {
         return None;
     }
     // Shift+Z is redo. It has to be tried before plain Z, or undo would steal it.
-    match key_press.key.as_ref() {
-        Key::Character("s") => Some(Binding::Custom(Msg::Save)),
-        Key::Character("e") => Some(Binding::Custom(Msg::ToggleMode)),
-        Key::Character("z" | "Z") if key_press.modifiers.shift() => {
-            Some(Binding::Custom(Msg::Redo))
-        }
-        Key::Character("y" | "Y") if !key_press.modifiers.shift() => {
-            Some(Binding::Custom(Msg::Redo))
-        }
-        Key::Character("z" | "Z") => Some(Binding::Custom(Msg::Undo)),
-        Key::Character("v") if !key_press.modifiers.alt() => Some(Binding::Custom(Msg::Paste)),
+    match key {
+        Key::Character("s") => Some(Msg::Save),
+        Key::Character("e") => Some(Msg::ToggleMode),
+        Key::Character("z" | "Z") if modifiers.shift() => Some(Msg::Redo),
+        Key::Character("y" | "Y") if !modifiers.shift() => Some(Msg::Redo),
+        Key::Character("z" | "Z") => Some(Msg::Undo),
+        Key::Character("v") if !modifiers.alt() => Some(Msg::Paste),
         _ => None,
     }
 }
 
 fn edge_binding(caret: &CaretEdges, key_press: &KeyPress) -> Option<Binding<Msg>> {
     let plain = modifiers_are_plain(key_press.modifiers);
-    match key_press.key.as_ref() {
-        Key::Named(Named::ArrowUp) if plain && caret.at_top => {
-            Some(Binding::Custom(Msg::Nav(Nav::Up)))
-        }
-        Key::Named(Named::ArrowDown) if plain && caret.at_bottom => {
-            Some(Binding::Custom(Msg::Nav(Nav::Down)))
-        }
-        Key::Named(Named::ArrowLeft) if plain && caret.at_start => {
-            Some(Binding::Custom(Msg::Nav(Nav::Left)))
-        }
-        Key::Named(Named::ArrowRight) if plain && caret.at_end => {
-            Some(Binding::Custom(Msg::Nav(Nav::Right)))
-        }
-        Key::Named(Named::Backspace) if caret.at_start => Some(Binding::Custom(Msg::MergeUp)),
-        Key::Named(Named::Delete) if caret.at_end => Some(Binding::Custom(Msg::MergeDown)),
-        _ => None,
-    }
+    let msg = match key_press.key.as_ref() {
+        Key::Named(Named::ArrowUp) if plain && caret.at_top => Msg::Nav(Nav::Up),
+        Key::Named(Named::ArrowDown) if plain && caret.at_bottom => Msg::Nav(Nav::Down),
+        Key::Named(Named::ArrowLeft) if plain && caret.at_start => Msg::Nav(Nav::Left),
+        Key::Named(Named::ArrowRight) if plain && caret.at_end => Msg::Nav(Nav::Right),
+        Key::Named(Named::Backspace) if caret.at_start => Msg::MergeUp,
+        Key::Named(Named::Delete) if caret.at_end => Msg::MergeDown,
+        _ => return None,
+    };
+    Some(Binding::Custom(msg))
 }
 
 fn modifiers_are_plain(modifiers: Modifiers) -> bool {

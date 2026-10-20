@@ -23,6 +23,8 @@ mod view;
 #[cfg(test)]
 mod tests;
 
+pub use view::command;
+
 use std::ops::Range;
 
 use iced::advanced::widget::Id;

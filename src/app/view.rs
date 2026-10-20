@@ -11,7 +11,7 @@ use super::style::{
 };
 use super::{App, Doc, Message, Mode, SIDEBAR_WIDTH, SOURCE_EDITOR_ID};
 use crate::highlight;
-use crate::live::Live;
+use crate::live::{self, Live};
 use crate::theme::{self, Appearance};
 
 impl App {
@@ -262,18 +262,14 @@ fn editor_bindings(key_press: KeyPress) -> Option<Binding<Message>> {
     Binding::from_key_press(key_press)
 }
 
+/// The same shortcuts as live preview, see [`live::command`].
 pub(super) fn shortcut(key: keyboard::Key<&str>, modifiers: Modifiers) -> Option<Message> {
-    if !modifiers.command() {
-        return None;
-    }
-    match key {
-        Key::Character("s") => Some(Message::Save),
-        Key::Character("e") => Some(Message::ToggleMode),
-        // Shift+Z is redo. It has to be tried before plain Z, or undo would steal it.
-        Key::Character("z" | "Z") if modifiers.shift() => Some(Message::Redo),
-        Key::Character("y" | "Y") if !modifiers.shift() => Some(Message::Redo),
-        Key::Character("z" | "Z") => Some(Message::Undo),
-        Key::Character("v") if !modifiers.alt() => Some(Message::Paste),
+    match live::command(key, modifiers)? {
+        live::Msg::Save => Some(Message::Save),
+        live::Msg::ToggleMode => Some(Message::ToggleMode),
+        live::Msg::Undo => Some(Message::Undo),
+        live::Msg::Redo => Some(Message::Redo),
+        live::Msg::Paste => Some(Message::Paste),
         _ => None,
     }
 }
