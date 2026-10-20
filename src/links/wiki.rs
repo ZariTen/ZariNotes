@@ -159,11 +159,7 @@ pub(super) fn wiki_target_blank(link: &Wiki<'_>) -> bool {
 ///
 /// External URLs and image files are not notes. A destination with no scheme
 /// and no extension, or a `.md` extension, is.
-fn take_markdown_link<'a>(
-    text: &'a str,
-    line: usize,
-    excerpt: &str,
-) -> Option<(Mention, &'a str)> {
+fn take_markdown_link<'a>(text: &'a str, line: usize, excerpt: &str) -> Option<(Mention, &'a str)> {
     if text.starts_with('!') || !text.starts_with('[') {
         return None;
     }

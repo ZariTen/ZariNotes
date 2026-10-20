@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use crate::tree::Dir;
 
-use wiki::{LinkKind, note_key, normalize_key, percent_decode, split_heading};
+use wiki::{LinkKind, normalize_key, note_key, percent_decode, split_heading};
 
 pub use preview::rewrite_wikilinks;
 pub use wiki::Mention;
@@ -401,7 +401,10 @@ and [md](folder/Note.md) plus [web](https://example.com) and ![](pic.png)
             &["Ideas.md", "journal/Day.md", "Alone.md"],
             &[
                 ("journal/Day.md", "Wrote about [[Ideas|the idea]] today."),
-                ("Alone.md", "No mention, but [elsewhere](../Ideas.md) waits."),
+                (
+                    "Alone.md",
+                    "No mention, but [elsewhere](../Ideas.md) waits.",
+                ),
                 (
                     "Ideas.md",
                     "[[Alone]] is outgoing, not a backlink of itself.",
