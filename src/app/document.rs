@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use iced::Task;
 use iced::widget::text_editor::{self, Cursor, Position};
 
-use super::history::{EditKind, Snapshot};
+use super::history::{EditKind, Input, Snapshot};
 use super::{
     App, CREATE_NAME_ID, Clicked, CreateKind, CreatePrompt, CreateStep, Doc, Message, Mode,
     SOURCE_EDITOR_ID,
@@ -130,10 +130,20 @@ impl App {
     fn text_before_new_step(&mut self, kind: EditKind) -> Option<String> {
         let snap = self.capture()?;
         let text = snap.text.clone();
-        if self.history.begin(kind, snap) {
-            return Some(text);
+        self.history.begin(kind, snap).then_some(text)
+    }
+
+    /// Run `apply` as `input` says: a recorded edit, a caret move that ends
+    /// the current undo group, or neither.
+    pub(super) fn apply_input<T>(&mut self, input: Input, apply: impl FnOnce(&mut Self) -> T) -> T {
+        match input {
+            Input::Edit(kind) => self.record_edit(kind, apply),
+            Input::Moved => {
+                self.history.close();
+                apply(self)
+            }
+            Input::Ignore => apply(self),
         }
-        None
     }
 
     pub(super) fn update_live(
@@ -312,14 +322,14 @@ impl App {
         let Some(clicked) = prompt.clicked else {
             return Task::none();
         };
-        if let Err(error) = remove_clicked(&workspace, &clicked) {
-            self.notice = Some(error);
-            self.create = None;
-            return Task::none();
-        }
-        self.drop_deleted(&clicked);
         self.create = None;
-        self.notice = None;
+        match remove_clicked(&workspace, &clicked) {
+            Ok(()) => {
+                self.drop_deleted(&clicked);
+                self.notice = None;
+            }
+            Err(error) => self.notice = Some(error),
+        }
         Task::none()
     }
 
@@ -339,12 +349,17 @@ impl App {
     }
 
     fn close_if_deleted(&mut self, clicked: &Clicked) {
-        let Some(current) = self.current.clone() else {
-            return;
-        };
-        if !clicked.deletes(&current) {
-            return;
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|current| clicked.deletes(current))
+        {
+            self.close_note();
         }
+    }
+
+    /// Forget the open note without saving it.
+    pub(super) fn close_note(&mut self) {
         self.current = None;
         self.doc = None;
         self.dirty = false;
@@ -471,28 +486,20 @@ fn stays_in_workspace(rel: &Path) -> bool {
 
 fn remove_clicked(workspace: &Path, clicked: &Clicked) -> Result<(), String> {
     let rel = clicked.path();
+    let failed = |why: &dyn std::fmt::Display| format!("Could not delete {}: {why}", rel.display());
+    let leaves = "that path leaves the workspace.";
     if !stays_in_workspace(rel) {
-        return Err(format!(
-            "Could not delete {}: that path leaves the workspace.",
-            rel.display()
-        ));
+        return Err(failed(&leaves));
     }
     let path = workspace.join(rel);
     if !path.exists() {
         return Ok(());
     }
     match resolved_inside(workspace, &path) {
-        Ok(true) => {}
-        Ok(false) => {
-            return Err(format!(
-                "Could not delete {}: that path leaves the workspace.",
-                rel.display()
-            ));
-        }
-        Err(error) => return Err(format!("Could not delete {}: {error}", rel.display())),
+        Ok(true) => delete_path(&path, clicked).map_err(|error| failed(&error)),
+        Ok(false) => Err(failed(&leaves)),
+        Err(error) => Err(failed(&error)),
     }
-    delete_path(&path, clicked)
-        .map_err(|error| format!("Could not delete {}: {error}", rel.display()))
 }
 
 fn resolved_inside(workspace: &Path, path: &Path) -> std::io::Result<bool> {
@@ -509,10 +516,7 @@ fn delete_path(path: &Path, clicked: &Clicked) -> std::io::Result<()> {
 }
 
 fn needs_md_extension(path: &Path) -> bool {
-    match path.extension() {
-        Some(ext) => ext != "md",
-        None => true,
-    }
+    path.extension().is_none_or(|ext| ext != "md")
 }
 
 fn write_entry(workspace: &Path, rel: &Path, kind: CreateKind) -> std::io::Result<()> {
@@ -555,18 +559,14 @@ fn link_target(url: &str) -> Option<String> {
         .next()
         .unwrap_or_default()
         .replace("%20", " ");
-    if target.is_empty() {
-        None
-    } else {
-        Some(target)
-    }
+    (!target.is_empty()).then_some(target)
 }
 
 fn note_folder(current: Option<&Path>) -> PathBuf {
-    match current.and_then(|path| path.parent()) {
-        Some(parent) => parent.to_path_buf(),
-        None => PathBuf::new(),
-    }
+    current
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_default()
 }
 
 fn open_external(url: &str) -> std::io::Result<()> {

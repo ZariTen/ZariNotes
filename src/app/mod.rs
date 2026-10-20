@@ -295,11 +295,7 @@ impl App {
 
     fn open_workspace(&mut self, dir: PathBuf) -> Task<Message> {
         self.save_if_dirty();
-        self.current = None;
-        self.doc = None;
-        self.dirty = false;
-        self.saved = None;
-        self.history.clear();
+        self.close_note();
         self.tree = Dir::default();
         self.links = Index::default();
         self.expanded.clear();
@@ -335,16 +331,8 @@ impl App {
     }
 
     fn edit_source(&mut self, action: Action) -> Task<Message> {
-        match history::input_action(&action, self.source_has_selection()) {
-            history::Input::Edit(kind) => {
-                self.record_edit(kind, |app| app.perform_source(action));
-            }
-            history::Input::Moved => {
-                self.history.close();
-                self.perform_source(action);
-            }
-            history::Input::Ignore => self.perform_source(action),
-        }
+        let input = history::input_action(&action, self.source_has_selection());
+        self.apply_input(input, |app| app.perform_source(action));
         Task::none()
     }
 
@@ -366,25 +354,10 @@ impl App {
         let input = if matches!(msg, live::Msg::DragEnd) && self.live_is_resizing() {
             history::Input::Edit(history::EditKind::Other)
         } else {
-            live_input(&msg, self.live_has_selection())
+            live_input(&msg, self.live().is_some_and(Live::has_selection))
         };
-        let (task, outcome) = self.run_live(msg, input);
+        let (task, outcome) = self.apply_input(input, |app| app.update_live(msg));
         self.finish_live(task, outcome)
-    }
-
-    fn run_live(
-        &mut self,
-        msg: live::Msg,
-        input: history::Input,
-    ) -> (Task<live::Msg>, live::Outcome) {
-        match input {
-            history::Input::Edit(kind) => self.record_edit(kind, |app| app.update_live(msg)),
-            history::Input::Moved => {
-                self.history.close();
-                self.update_live(msg)
-            }
-            history::Input::Ignore => self.update_live(msg),
-        }
     }
 
     fn finish_live(&mut self, task: Task<live::Msg>, outcome: live::Outcome) -> Task<Message> {
@@ -407,18 +380,15 @@ impl App {
         }
     }
 
-    fn live_has_selection(&self) -> bool {
+    fn live(&self) -> Option<&Live> {
         match &self.doc {
-            Some(Doc::Live(live)) => live.has_selection(),
-            _ => false,
+            Some(Doc::Live(live)) => Some(live),
+            _ => None,
         }
     }
 
     fn live_is_resizing(&self) -> bool {
-        match &self.doc {
-            Some(Doc::Live(live)) => live.is_resizing(),
-            _ => false,
-        }
+        self.live().is_some_and(Live::is_resizing)
     }
 
     fn subscription(&self) -> Subscription<Message> {

@@ -19,16 +19,15 @@ impl App {
     }
 
     pub(super) fn clipboard_offer(&mut self, offer: ClipboardOffer) -> Task<Message> {
+        let image_tool_missing = matches!(offer, ClipboardOffer::ToolMissing);
         match offer {
             ClipboardOffer::Image(image) => self.insert_image(image),
-            ClipboardOffer::None => iced::clipboard::read().map(|text| Message::PasteText {
-                text,
-                image_tool_missing: false,
-            }),
-            ClipboardOffer::ToolMissing => iced::clipboard::read().map(|text| Message::PasteText {
-                text,
-                image_tool_missing: true,
-            }),
+            ClipboardOffer::None | ClipboardOffer::ToolMissing => {
+                iced::clipboard::read().map(move |text| Message::PasteText {
+                    text,
+                    image_tool_missing,
+                })
+            }
         }
     }
 
