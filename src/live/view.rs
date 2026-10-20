@@ -43,20 +43,15 @@ impl Live {
         note_dir: Option<&PathBuf>,
     ) -> Vec<Element<'a, Msg>> {
         let mut blocks = Vec::with_capacity(self.segments.len());
-        let mut i = 0;
-        while i < self.segments.len() {
-            let start = self.segments[i].lines.start;
+        for (i, seg) in self.segments.iter().enumerate() {
+            let start = seg.lines.start;
             // The editor is one widget for the whole span. Later lines in that
             // span are already inside it, so they must not render again.
-            if self.editor_lines.contains(&start) {
-                if start == self.editor_lines.start {
-                    blocks.push(self.editor_view());
-                }
-                i += 1;
-                continue;
+            if !self.editor_lines.contains(&start) {
+                blocks.push(self.rendered(i, seg, settings, note_dir));
+            } else if start == self.editor_lines.start {
+                blocks.push(self.editor_view());
             }
-            blocks.push(self.rendered(i, &self.segments[i], settings, note_dir));
-            i += 1;
         }
         blocks
     }
@@ -156,7 +151,10 @@ impl Live {
             return body;
         }
         if seg.items.is_empty() {
-            return dim_text(seg.source.as_str(), TEXT_SIZE);
+            return text(seg.source.as_str())
+                .size(TEXT_SIZE)
+                .style(dim_ink)
+                .into();
         }
         markdown::view_with(
             &seg.items,
@@ -295,10 +293,6 @@ fn blank_body(seg: &Segment) -> Option<Element<'static, Msg>> {
         return None;
     }
     Some(space().height(LINE_HEIGHT).into())
-}
-
-fn dim_text(line: &str, size: f32) -> Element<'_, Msg> {
-    text(line).size(size).style(dim_ink).into()
 }
 
 fn dim_ink(theme: &Theme) -> text::Style {

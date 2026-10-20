@@ -409,16 +409,7 @@ struct Resize {
 fn flip_task_box(line: &mut String) {
     if let Some(at) = line.find("[ ]") {
         line.replace_range(at..at + 3, "[x]");
-        return;
-    }
-    if let Some(at) = checked_box(line) {
+    } else if let Some(at) = line.find("[x]").or_else(|| line.find("[X]")) {
         line.replace_range(at..at + 3, "[ ]");
     }
-}
-
-fn checked_box(line: &str) -> Option<usize> {
-    if let Some(at) = line.find("[x]") {
-        return Some(at);
-    }
-    line.find("[X]")
 }

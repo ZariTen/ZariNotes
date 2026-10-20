@@ -193,7 +193,7 @@ impl Live {
     fn place(&self, line: usize, column: usize) -> Position {
         Position {
             line,
-            column: floor_char_boundary(&self.lines[line], column.min(self.lines[line].len())),
+            column: floor_char_boundary(&self.lines[line], column),
         }
     }
 
@@ -232,12 +232,10 @@ impl Live {
     }
 
     fn to_local(&self, start: usize, pos: Position) -> Position {
+        let pos = self.place(pos.line, pos.column);
         Position {
             line: pos.line - start,
-            column: floor_char_boundary(
-                &self.lines[pos.line],
-                pos.column.min(self.lines[pos.line].len()),
-            ),
+            ..pos
         }
     }
 
@@ -259,11 +257,7 @@ impl Live {
     }
 
     fn clamp_pos(&self, pos: Position) -> Position {
-        let line = pos.line.min(self.lines.len() - 1);
-        Position {
-            line,
-            column: floor_char_boundary(&self.lines[line], pos.column.min(self.lines[line].len())),
-        }
+        self.place(pos.line.min(self.lines.len() - 1), pos.column)
     }
 
     /// Drop back to the caret's segment once a cross-segment selection is gone.

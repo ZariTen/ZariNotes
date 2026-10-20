@@ -157,20 +157,14 @@ struct DrawnPrefix {
 
 /// Heading, then list, then quote. A heading marker is not a list marker.
 fn drawn_prefix(text: &str) -> DrawnPrefix {
-    if let Some(prefix) = heading_prefix(text) {
-        return prefix;
-    }
-    if let Some(prefix) = list_prefix(text) {
-        return prefix;
-    }
-    if let Some(prefix) = quote_prefix(text) {
-        return prefix;
-    }
-    DrawnPrefix {
-        hidden_bytes: 0,
-        extra_pixels: 0.0,
-        scale: 1.0,
-    }
+    heading_prefix(text)
+        .or_else(|| list_prefix(text))
+        .or_else(|| quote_prefix(text))
+        .unwrap_or(DrawnPrefix {
+            hidden_bytes: 0,
+            extra_pixels: 0.0,
+            scale: 1.0,
+        })
 }
 
 fn heading_prefix(text: &str) -> Option<DrawnPrefix> {
