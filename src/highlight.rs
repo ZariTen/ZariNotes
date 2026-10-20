@@ -296,25 +296,13 @@ fn inline(line: &str, start: usize, fill: Option<Kind>, out: &mut Vec<(Range<usi
 /// Order matters. `**` must be tried before `*`, and `[[` before `[`,
 /// or the shorter marker would win.
 fn first_syntax(line: &str, at: usize) -> Option<Found> {
-    if let Some(found) = inline_code(line, at) {
-        return Some(found);
-    }
-    if let Some(found) = bold(line, at) {
-        return Some(found);
-    }
-    if let Some(found) = strike(line, at) {
-        return Some(found);
-    }
-    if let Some(found) = double_equals(line, at) {
-        return Some(found);
-    }
-    if let Some(found) = italic(line, at) {
-        return Some(found);
-    }
-    if let Some(found) = wiki_link(line, at) {
-        return Some(found);
-    }
-    markdown_link(line, at)
+    inline_code(line, at)
+        .or_else(|| bold(line, at))
+        .or_else(|| strike(line, at))
+        .or_else(|| double_equals(line, at))
+        .or_else(|| italic(line, at))
+        .or_else(|| wiki_link(line, at))
+        .or_else(|| markdown_link(line, at))
 }
 
 /// `` `code` `` with a closing tick on this line.

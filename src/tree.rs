@@ -57,34 +57,25 @@ impl Dir {
 
     /// Drop one note. Parent folders stay, even if this was their last note.
     pub fn remove_file(&mut self, rel: &Path) -> bool {
-        let mut names = normal_names(rel);
-        let Some(file) = names.pop() else {
-            return false;
-        };
-        let Some(dir) = self.dir_mut(&names) else {
-            return false;
-        };
-        dir.files.remove(&file)
+        self.parent_of(rel)
+            .is_some_and(|(dir, name)| dir.files.remove(&name))
     }
 
     /// Drop one folder and everything the tree had under it.
     pub fn remove_dir(&mut self, rel: &Path) -> bool {
-        let mut names = normal_names(rel);
-        let Some(folder) = names.pop() else {
-            return false;
-        };
-        let Some(dir) = self.dir_mut(&names) else {
-            return false;
-        };
-        dir.dirs.remove(&folder).is_some()
+        self.parent_of(rel)
+            .is_some_and(|(dir, name)| dir.dirs.remove(&name).is_some())
     }
 
-    fn dir_mut(&mut self, names: &[String]) -> Option<&mut Dir> {
+    /// The folder that holds `rel`, and the last name in `rel`.
+    fn parent_of(&mut self, rel: &Path) -> Option<(&mut Dir, String)> {
+        let mut names = normal_names(rel);
+        let last = names.pop()?;
         let mut dir = self;
-        for name in names {
+        for name in &names {
             dir = dir.dirs.get_mut(name)?;
         }
-        Some(dir)
+        Some((dir, last))
     }
 
     pub fn is_empty(&self) -> bool {
