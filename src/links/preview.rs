@@ -14,12 +14,10 @@ use crate::highlight::is_fence;
 pub fn rewrite_wikilinks(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut in_fence = false;
-    let mut lines = source.split('\n');
-    if let Some(first) = lines.next() {
-        in_fence = rewrite_outside_fence(first, in_fence, &mut out);
-    }
-    for line in lines {
-        out.push('\n');
+    for (i, line) in source.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
         in_fence = rewrite_outside_fence(line, in_fence, &mut out);
     }
     out

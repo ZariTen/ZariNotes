@@ -54,14 +54,10 @@ pub(super) fn parse_mentions(text: &str) -> Vec<Mention> {
     // YAML between the opening `---` and its close is not prose. A `[[link]]`
     // there is a value, not a note reference.
     let mut in_front_matter = false;
-    let mut started = false;
     for (line_no, line) in text.lines().enumerate() {
-        if !started {
-            started = true;
-            if is_front_matter_mark(line) {
-                in_front_matter = true;
-                continue;
-            }
+        if line_no == 0 && is_front_matter_mark(line) {
+            in_front_matter = true;
+            continue;
         }
         if in_front_matter {
             if is_front_matter_mark(line) {
