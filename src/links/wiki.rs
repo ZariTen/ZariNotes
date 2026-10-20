@@ -7,6 +7,8 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use crate::highlight::{is_fence, is_front_matter_mark};
+
 pub(super) const WIKI_SCHEME: &str = "zari-wiki:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,11 +79,6 @@ pub(super) fn parse_mentions(text: &str) -> Vec<Mention> {
         mentions.extend(mentions_in_line(line, line_no));
     }
     mentions
-}
-
-fn is_front_matter_mark(line: &str) -> bool {
-    let line = line.trim_end();
-    line == "---" || line == "..."
 }
 
 fn mentions_in_line(line: &str, line_no: usize) -> Vec<Mention> {
@@ -214,12 +211,7 @@ fn looks_like_asset(path: &str) -> bool {
 }
 
 fn is_external(url: &str) -> bool {
-    url.contains("://") || url.starts_with("mailto:") || url.starts_with(WIKI_SCHEME)
-}
-
-pub(super) fn is_fence(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+    super::is_external_url(url) || url.starts_with(WIKI_SCHEME)
 }
 
 fn skip_escaped(text: &str) -> &str {
@@ -270,18 +262,9 @@ pub(super) fn note_key(path: &Path) -> String {
 }
 
 pub(super) fn normalize_key(target: &str) -> String {
-    let mut out = PathBuf::new();
     let bare = target.strip_suffix(".md").unwrap_or(target);
-    for part in Path::new(bare).components() {
-        match part {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Normal(name) => out.push(name),
-            _ => {}
-        }
-    }
-    out.components()
+    super::normalize(Path::new(bare))
+        .components()
         .filter_map(|part| match part {
             Component::Normal(name) => Some(name.to_string_lossy().to_lowercase()),
             _ => None,

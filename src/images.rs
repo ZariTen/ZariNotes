@@ -153,7 +153,7 @@ pub fn paste_snippet(column: usize, filename: &str) -> String {
 
 /// Local file for a markdown image URL, relative to the note's folder.
 pub fn image_path(note_dir: &Path, url: &str) -> Option<PathBuf> {
-    if url.contains("://") || url.starts_with("mailto:") {
+    if crate::links::is_external_url(url) {
         return None;
     }
     let decoded = percent_decode(url);

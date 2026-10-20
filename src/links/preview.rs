@@ -5,9 +5,10 @@
 //! fenced blocks are left alone — a wikilink in a sample is not a link.
 
 use super::wiki::{
-    WIKI_SCHEME, Wiki, is_asset_embed, is_fence, percent_encode, split_alias, split_heading,
-    take_wikilink, wiki_target_blank,
+    WIKI_SCHEME, Wiki, is_asset_embed, percent_encode, split_alias, split_heading, take_wikilink,
+    wiki_target_blank,
 };
+use crate::highlight::is_fence;
 
 /// Rewrite `[[links]]` into Markdown links the live preview can click.
 pub fn rewrite_wikilinks(source: &str) -> String {

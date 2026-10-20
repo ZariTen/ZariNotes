@@ -14,7 +14,7 @@ mod preview;
 mod wiki;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::tree::Dir;
 
@@ -318,6 +318,26 @@ fn keys_for(notes: &[PathBuf]) -> HashMap<String, Vec<usize>> {
         }
     }
     by_key
+}
+
+/// A URL for the system handler (web, mail), not a file in the workspace.
+pub fn is_external_url(url: &str) -> bool {
+    url.contains("://") || url.starts_with("mailto:")
+}
+
+/// Resolve `.` and `..` components without touching the filesystem.
+pub fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(name) => out.push(name),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Scan the folder and index its links. Run off the UI thread.

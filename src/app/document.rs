@@ -188,7 +188,7 @@ impl App {
         if links::Index::is_wiki_url(url) {
             return self.open_wiki(url);
         }
-        if is_external_url(url) {
+        if links::is_external_url(url) {
             return self.open_in_system(url);
         }
         let Some(rel) = note_path(self.current.as_deref(), url) else {
@@ -540,13 +540,9 @@ fn create_empty_file(path: &Path) -> std::io::Result<()> {
     std::fs::write(path, "")
 }
 
-fn is_external_url(url: &str) -> bool {
-    url.contains("://") || url.starts_with("mailto:")
-}
-
 fn note_path(current: Option<&Path>, url: &str) -> Option<PathBuf> {
     let target = link_target(url)?;
-    let mut rel = normalize(&note_folder(current).join(target));
+    let mut rel = links::normalize(&note_folder(current).join(target));
     if rel.extension().is_none() {
         rel.set_extension("md");
     }
@@ -571,21 +567,6 @@ fn note_folder(current: Option<&Path>) -> PathBuf {
         Some(parent) => parent.to_path_buf(),
         None => PathBuf::new(),
     }
-}
-
-/// Resolve `.` and `..` components without touching the filesystem.
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for part in path.components() {
-        match part {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Normal(name) => out.push(name),
-            _ => {}
-        }
-    }
-    out
 }
 
 fn open_external(url: &str) -> std::io::Result<()> {

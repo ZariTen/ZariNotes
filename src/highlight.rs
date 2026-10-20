@@ -155,12 +155,19 @@ pub fn spans(line: &str, fenced: bool) -> (Vec<(Range<usize>, Kind)>, bool) {
 }
 
 fn fence_line(line: &str, fenced: bool) -> Option<(Spans, bool)> {
+    is_fence(line).then(|| (vec![(0..line.len(), Kind::Marker)], !fenced))
+}
+
+/// A line that opens or closes a fenced code block.
+pub fn is_fence(line: &str) -> bool {
     let trimmed = line.trim_start();
-    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-        Some((vec![(0..line.len(), Kind::Marker)], !fenced))
-    } else {
-        None
-    }
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
+/// `---` opens front matter. `---` or `...` closes it.
+pub fn is_front_matter_mark(line: &str) -> bool {
+    let line = line.trim_end();
+    line == "---" || line == "..."
 }
 
 fn code_line(line: &str) -> (Spans, bool) {
@@ -228,7 +235,8 @@ fn list_item(line: &str, pos: &mut usize, out: &mut Spans) {
     *pos += task_len;
 }
 
-fn task_box(s: &str) -> Option<usize> {
+/// Length of a task box (`[ ] `, `[x] `, `[X] `) at the start of `s`.
+pub fn task_box(s: &str) -> Option<usize> {
     ["[ ] ", "[x] ", "[X] "]
         .into_iter()
         .find(|task| s.starts_with(task))

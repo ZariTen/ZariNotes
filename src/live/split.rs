@@ -40,13 +40,8 @@ fn front_matter_end(lines: &[String]) -> Option<usize> {
     if first.trim_end() != "---" {
         return None;
     }
-    let close = (1..lines.len()).find(|&j| is_front_matter_close(&lines[j]))?;
+    let close = (1..lines.len()).find(|&j| highlight::is_front_matter_mark(&lines[j]))?;
     Some(close + 1)
-}
-
-fn is_front_matter_close(line: &str) -> bool {
-    let line = line.trim_end();
-    line == "---" || line == "..."
 }
 
 fn fence_end(lines: &[String], i: usize) -> Option<usize> {
@@ -57,13 +52,7 @@ fn fence_end(lines: &[String], i: usize) -> Option<usize> {
 
 fn fence_marker(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();
-    if trimmed.starts_with("```") {
-        return Some(&trimmed[..3]);
-    }
-    if trimmed.starts_with("~~~") {
-        return Some(&trimmed[..3]);
-    }
-    None
+    highlight::is_fence(trimmed).then(|| &trimmed[..3])
 }
 
 fn table_end(lines: &[String], i: usize) -> Option<usize> {
@@ -106,8 +95,8 @@ fn read_list_line(line: &str) -> Option<ListLine<'_>> {
     let marker_len = highlight::list_marker(rest)?;
     let mut marker = rest[..marker_len].to_owned();
     let mut body = &rest[marker_len..];
-    if let Some(after_task) = task_body(body) {
-        body = after_task;
+    if let Some(task) = highlight::task_box(body) {
+        body = &body[task..];
         marker.push_str("[ ] ");
     }
     Some(ListLine {
@@ -115,15 +104,6 @@ fn read_list_line(line: &str) -> Option<ListLine<'_>> {
         marker,
         body,
     })
-}
-
-fn task_body(body: &str) -> Option<&str> {
-    for task in ["[ ] ", "[x] ", "[X] "] {
-        if let Some(rest) = body.strip_prefix(task) {
-            return Some(rest);
-        }
-    }
-    None
 }
 
 fn clear_list_marker() -> Binding<Msg> {
@@ -211,7 +191,7 @@ fn heading_prefix(text: &str) -> Option<DrawnPrefix> {
 
 fn list_prefix(text: &str) -> Option<DrawnPrefix> {
     let marker = highlight::list_marker(text)?;
-    let task = has_task_box(&text[marker..]);
+    let task = highlight::task_box(&text[marker..]).is_some();
     let ordered = text.as_bytes()[0].is_ascii_digit();
     // An ordered item that is also a task still uses the ordered bullet width.
     let extra_pixels = if ordered {
@@ -226,10 +206,6 @@ fn list_prefix(text: &str) -> Option<DrawnPrefix> {
         extra_pixels,
         scale: 1.0,
     })
-}
-
-fn has_task_box(text: &str) -> bool {
-    text.starts_with("[ ] ") || text.starts_with("[x] ") || text.starts_with("[X] ")
 }
 
 fn quote_prefix(text: &str) -> Option<DrawnPrefix> {
