@@ -526,36 +526,17 @@ mod tests {
     fn save_image_writes_into_dot_images_without_overwriting() {
         let dir = temp_dir("save");
         std::fs::create_dir_all(&dir).unwrap();
-        let first = save_image(
-            &dir,
-            &ImageBytes {
-                bytes: b"one".to_vec(),
-                extension: "png".into(),
-            },
-        )
-        .unwrap();
-        let second = save_image(
-            &dir,
-            &ImageBytes {
-                bytes: b"two".to_vec(),
-                extension: "png".into(),
-            },
-        )
-        .unwrap();
+        let image = |bytes: &[u8], ext: &str| ImageBytes {
+            bytes: bytes.to_vec(),
+            extension: ext.into(),
+        };
+        let first = save_image(&dir, &image(b"one", "png")).unwrap();
+        let second = save_image(&dir, &image(b"two", "png")).unwrap();
         assert_ne!(first, second);
         let folder = dir.join(".images");
         assert_eq!(std::fs::read(folder.join(&first)).unwrap(), b"one");
         assert_eq!(std::fs::read(folder.join(&second)).unwrap(), b"two");
-        assert!(
-            save_image(
-                &dir,
-                &ImageBytes {
-                    bytes: b"no".to_vec(),
-                    extension: "exe".into(),
-                },
-            )
-            .is_err()
-        );
+        assert!(save_image(&dir, &image(b"no", "exe")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

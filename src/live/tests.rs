@@ -160,15 +160,21 @@ fn click_column_skips_markup() {
     assert_eq!(&raw[col..col + 1], "o");
 }
 
-#[test]
-fn resize_writes_the_width_on_release_and_leaves_the_cursor() {
+/// A note with one image on line 0 and the cursor on line 1, mid corner drag.
+fn resizing(width: f32, x: f32) -> Live {
     let (mut live, _) = Live::new("![](.images/a.png)\nnext", Position { line: 1, column: 0 });
     let _ = live.update(Msg::ResizeStart {
         line: 0,
         url: ".images/a.png".into(),
-        width: 480.0,
-        x: 10.0,
+        width,
+        x,
     });
+    live
+}
+
+#[test]
+fn resize_writes_the_width_on_release_and_leaves_the_cursor() {
+    let mut live = resizing(480.0, 10.0);
     let _ = live.update(Msg::ResizeMove(40.0));
     assert_eq!(live.text(), "![](.images/a.png)\nnext");
     assert!(live.is_resizing());
@@ -181,13 +187,7 @@ fn resize_writes_the_width_on_release_and_leaves_the_cursor() {
 
 #[test]
 fn a_click_on_the_handle_does_not_rewrite_the_line() {
-    let (mut live, _) = Live::new("![](.images/a.png)\nnext", Position { line: 1, column: 0 });
-    let _ = live.update(Msg::ResizeStart {
-        line: 0,
-        url: ".images/a.png".into(),
-        width: 480.0,
-        x: 10.0,
-    });
+    let mut live = resizing(480.0, 10.0);
     let (_, outcome) = live.update(Msg::DragEnd);
     assert_eq!(live.text(), "![](.images/a.png)\nnext");
     assert!(matches!(outcome, Outcome::None));
@@ -195,13 +195,7 @@ fn a_click_on_the_handle_does_not_rewrite_the_line() {
 
 #[test]
 fn resize_stops_at_the_minimum_width() {
-    let (mut live, _) = Live::new("![](.images/a.png)\nnext", Position { line: 1, column: 0 });
-    let _ = live.update(Msg::ResizeStart {
-        line: 0,
-        url: ".images/a.png".into(),
-        width: 200.0,
-        x: 0.0,
-    });
+    let mut live = resizing(200.0, 0.0);
     let _ = live.update(Msg::ResizeMove(-1000.0));
     let _ = live.update(Msg::DragEnd);
     assert_eq!(live.text(), "![](.images/a.png?w=64)\nnext");
