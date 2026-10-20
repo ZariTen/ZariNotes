@@ -1,5 +1,6 @@
 //! Application state and the update loop.
 
+mod create;
 mod document;
 mod history;
 mod paste;
