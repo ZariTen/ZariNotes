@@ -29,7 +29,6 @@ pub struct Backlink {
     /// Workspace-relative path of the note that contains the link.
     pub from: PathBuf,
     pub alias: Option<String>,
-    pub heading: Option<String>,
     pub embed: bool,
     /// Line in `from`, so the panel can quote what was said.
     pub line: usize,
@@ -159,7 +158,6 @@ impl Index {
                 links.push(Backlink {
                     from: from.clone(),
                     alias: mention.alias.clone(),
-                    heading: mention.heading.clone(),
                     embed: mention.embed,
                     line: mention.line,
                     excerpt: mention.excerpt.clone(),
