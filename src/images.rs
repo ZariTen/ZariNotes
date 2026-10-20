@@ -48,97 +48,57 @@ pub enum ClipboardOffer {
 /// Read an image from the system clipboard. Blocks for at most a couple of seconds.
 pub fn read_clipboard() -> ClipboardOffer {
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        return read_with(wayland_image);
+        return read_image("wl-paste", &["--list-types"], |mime| {
+            vec!["--type", mime, "--no-newline"]
+        });
     }
-    read_with(x11_image)
-}
-
-fn read_with(read: fn() -> Read) -> ClipboardOffer {
-    match read() {
-        Read::Image(image) => ClipboardOffer::Image(image),
-        Read::None => ClipboardOffer::None,
-        Read::Missing => ClipboardOffer::ToolMissing,
-    }
-}
-
-enum Read {
-    Image(ImageBytes),
-    None,
-    Missing,
-}
-
-fn wayland_image() -> Read {
-    let types = match run("wl-paste", &["--list-types"]) {
-        Run::Output(text) => text,
-        Run::Missing => return Read::Missing,
-        Run::Failed => return Read::None,
-    };
-    if let Some((mime, ext)) = offered_image_type(&types) {
-        return bytes_from("wl-paste", &["--type", mime, "--no-newline"], ext);
-    }
-    if mime_listed(&types, "text/uri-list") {
-        return file_from_uri_list("wl-paste", &["--type", "text/uri-list", "--no-newline"]);
-    }
-    Read::None
-}
-
-fn x11_image() -> Read {
-    let types = match run(
+    read_image(
         "xclip",
         &["-selection", "clipboard", "-target", "TARGETS", "-out"],
-    ) {
-        Run::Output(text) => text,
-        Run::Missing => return Read::Missing,
-        Run::Failed => return Read::None,
-    };
-    if let Some((mime, ext)) = offered_image_type(&types) {
-        return bytes_from(
-            "xclip",
-            &["-selection", "clipboard", "-target", mime, "-out"],
-            ext,
-        );
-    }
-    if mime_listed(&types, "text/uri-list") {
-        return file_from_uri_list(
-            "xclip",
-            &[
-                "-selection",
-                "clipboard",
-                "-target",
-                "text/uri-list",
-                "-out",
-            ],
-        );
-    }
-    Read::None
+        |mime| vec!["-selection", "clipboard", "-target", mime, "-out"],
+    )
 }
 
-fn bytes_from(program: &str, args: &[&str], extension: &str) -> Read {
+/// List the offered types with `list`, then read one with `fetch(mime)`.
+fn read_image(program: &str, list: &[&str], fetch: fn(&str) -> Vec<&str>) -> ClipboardOffer {
+    let types = match run(program, list) {
+        Ok(text) => text,
+        Err(offer) => return offer,
+    };
+    if let Some((mime, ext)) = offered_image_type(&types) {
+        return bytes_from(program, &fetch(mime), ext);
+    }
+    if mime_listed(&types, "text/uri-list") {
+        return file_from_uri_list(program, &fetch("text/uri-list"));
+    }
+    ClipboardOffer::None
+}
+
+fn bytes_from(program: &str, args: &[&str], extension: &str) -> ClipboardOffer {
     match run_bytes(program, args) {
-        RunBytes::Bytes(bytes) if !bytes.is_empty() => Read::Image(ImageBytes {
+        RunBytes::Bytes(bytes) if !bytes.is_empty() => ClipboardOffer::Image(ImageBytes {
             bytes,
             extension: extension.to_owned(),
         }),
-        RunBytes::Missing => Read::Missing,
-        _ => Read::None,
+        RunBytes::Missing => ClipboardOffer::ToolMissing,
+        _ => ClipboardOffer::None,
     }
 }
 
-fn file_from_uri_list(program: &str, args: &[&str]) -> Read {
+fn file_from_uri_list(program: &str, args: &[&str]) -> ClipboardOffer {
     let text = match run(program, args) {
-        Run::Output(text) => text,
-        Run::Missing => return Read::Missing,
-        Run::Failed => return Read::None,
+        Ok(text) => text,
+        Err(offer) => return offer,
     };
     let Some(path) = first_local_image(&text) else {
-        return Read::None;
+        return ClipboardOffer::None;
     };
     match std::fs::read(&path) {
-        Ok(bytes) if !bytes.is_empty() => Read::Image(ImageBytes {
+        Ok(bytes) if !bytes.is_empty() => ClipboardOffer::Image(ImageBytes {
             bytes,
             extension: extension_of(&path).unwrap_or("png").to_owned(),
         }),
-        _ => Read::None,
+        _ => ClipboardOffer::None,
     }
 }
 
@@ -153,7 +113,7 @@ pub fn save_image(note_dir: &Path, image: &ImageBytes) -> io::Result<String> {
 }
 
 fn safe_extension(ext: &str) -> io::Result<&str> {
-    if IMAGE_TYPES.iter().any(|(_, known)| *known == ext) || ext == "jpeg" {
+    if known_extension(ext) {
         return Ok(if ext == "jpeg" { "jpg" } else { ext });
     }
     Err(io::Error::new(
@@ -276,9 +236,11 @@ fn mime_listed(types: &str, mime: &str) -> bool {
 }
 
 fn is_image_ext(path: &Path) -> bool {
-    extension_of(path).is_some_and(|ext| {
-        ext == "jpg" || ext == "jpeg" || IMAGE_TYPES.iter().any(|(_, known)| *known == ext)
-    })
+    extension_of(path).is_some_and(known_extension)
+}
+
+fn known_extension(ext: &str) -> bool {
+    ext == "jpeg" || IMAGE_TYPES.iter().any(|(_, known)| *known == ext)
 }
 
 fn extension_of(path: &Path) -> Option<&str> {
@@ -313,23 +275,18 @@ fn hex(byte: u8) -> Option<u8> {
     }
 }
 
-enum Run {
-    Output(String),
-    Missing,
-    Failed,
-}
-
 enum RunBytes {
     Bytes(Vec<u8>),
     Missing,
     Failed,
 }
 
-fn run(program: &str, args: &[&str]) -> Run {
+/// Text output, or the offer to give up with when the tool is missing or failed.
+fn run(program: &str, args: &[&str]) -> Result<String, ClipboardOffer> {
     match run_bytes(program, args) {
-        RunBytes::Bytes(bytes) => Run::Output(String::from_utf8_lossy(&bytes).into_owned()),
-        RunBytes::Missing => Run::Missing,
-        RunBytes::Failed => Run::Failed,
+        RunBytes::Bytes(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        RunBytes::Missing => Err(ClipboardOffer::ToolMissing),
+        RunBytes::Failed => Err(ClipboardOffer::None),
     }
 }
 
