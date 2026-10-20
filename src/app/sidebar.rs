@@ -9,7 +9,7 @@ use iced::widget::{
 use iced::{Element, Fill, Font, Padding, Point, Rectangle, Vector};
 
 use super::style::{
-    field_style, icon_button, line, menu_card, menu_danger_style, menu_item_style, rounded_danger,
+    field_style, icon_button, line, menu_card, menu_danger_style, quiet_button, rounded_danger,
     rounded_primary, rounded_subtle, row_label, tree_button,
 };
 use super::{
@@ -344,7 +344,7 @@ fn popup_item(label: &'static str, message: Message) -> Element<'static, Message
     button(text(label).size(14))
         .width(Fill)
         .padding([6, 10])
-        .style(menu_item_style)
+        .style(quiet_button)
         .on_press(message)
         .into()
 }

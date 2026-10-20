@@ -6,8 +6,8 @@ use iced::widget::{button, column, container, row, scrollable, text, text_editor
 use iced::{Element, Fill, Font};
 
 use super::style::{
-    backlink_row, chassis, editor_style, hint, line, panel, segment, segment_track, unsaved_style,
-    word_count, words_label, writing_surface,
+    backlink_row, chassis, editor_style, line, panel, quiet_button, segment, switch, unsaved_style,
+    with_tip, word_count, words_label, writing_surface,
 };
 use super::{App, Doc, Message, Mode, SIDEBAR_WIDTH, SOURCE_EDITOR_ID};
 use crate::highlight;
@@ -131,7 +131,7 @@ impl App {
         )
         .width(Fill)
         .padding([2, 4])
-        .style(super::style::quiet_button)
+        .style(quiet_button)
         .on_press(Message::ToggleBacklinks)
         .into()
     }
@@ -141,17 +141,15 @@ impl App {
         if !self.dirty {
             return text("Saved").size(12).color(muted).into();
         }
-        tooltip(
+        with_tip(
             button(text("Unsaved").size(12))
                 .padding([2, 8])
                 .style(unsaved_style)
                 .on_press(Message::Save),
-            hint("Save (Ctrl+S)"),
+            "Save (Ctrl+S)",
             tooltip::Position::Top,
+            350,
         )
-        .gap(6)
-        .delay(iced::time::Duration::from_millis(350))
-        .into()
     }
 
     fn footer_stats(&self) -> Vec<Element<'_, Message>> {
@@ -175,49 +173,37 @@ impl App {
     }
 
     fn theme_switch(&self) -> Element<'_, Message> {
-        container(
-            row![
-                segment(
-                    "Light",
-                    self.appearance == Appearance::Light,
-                    "Retro Classic — vintage beige and slate",
-                    Message::SetAppearance(Appearance::Light),
-                ),
-                segment(
-                    "Dark",
-                    self.appearance == Appearance::Dark,
-                    "Dolch Noir — charcoal and signal steel",
-                    Message::SetAppearance(Appearance::Dark),
-                ),
-            ]
-            .spacing(2),
-        )
-        .padding(2)
-        .style(segment_track)
-        .into()
+        switch([
+            segment(
+                "Light",
+                self.appearance == Appearance::Light,
+                "Retro Classic — vintage beige and slate",
+                Message::SetAppearance(Appearance::Light),
+            ),
+            segment(
+                "Dark",
+                self.appearance == Appearance::Dark,
+                "Dolch Noir — charcoal and signal steel",
+                Message::SetAppearance(Appearance::Dark),
+            ),
+        ])
     }
 
     fn mode_switch(&self) -> Element<'_, Message> {
-        container(
-            row![
-                segment(
-                    "Live",
-                    self.mode == Mode::Live,
-                    "Rendered notes. A selection shows source so you can copy it (Ctrl+E)",
-                    Message::SetMode(Mode::Live),
-                ),
-                segment(
-                    "Source",
-                    self.mode == Mode::Source,
-                    "Raw Markdown for the whole note (Ctrl+E)",
-                    Message::SetMode(Mode::Source),
-                ),
-            ]
-            .spacing(2),
-        )
-        .padding(2)
-        .style(segment_track)
-        .into()
+        switch([
+            segment(
+                "Live",
+                self.mode == Mode::Live,
+                "Rendered notes. A selection shows source so you can copy it (Ctrl+E)",
+                Message::SetMode(Mode::Live),
+            ),
+            segment(
+                "Source",
+                self.mode == Mode::Source,
+                "Raw Markdown for the whole note (Ctrl+E)",
+                Message::SetMode(Mode::Source),
+            ),
+        ])
     }
 }
 

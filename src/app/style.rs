@@ -1,6 +1,6 @@
 //! Sidebar and editor chrome: buttons, fields, and surfaces.
 
-use iced::widget::{button, column, container, text, text_editor, text_input, tooltip};
+use iced::widget::{button, column, container, row, text, text_editor, text_input, tooltip};
 use iced::{Border, Color, Element, Fill, Font, Padding, Shadow, Theme, Vector, border};
 
 use super::{LABEL, Message};
@@ -38,25 +38,32 @@ pub(super) fn icon_button<'a>(
     tip: &'a str,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
-    tooltip(
+    with_tip(
         button(icon)
             .padding(7)
             .width(30)
             .height(30)
             .style(icon_button_style)
             .on_press_maybe(on_press),
-        hint(tip),
+        tip,
         tooltip::Position::Bottom,
+        350,
     )
-    .gap(6)
-    .delay(iced::time::Duration::from_millis(350))
-    .into()
 }
 
-pub(super) fn hint<'a>(tip: &'a str) -> Element<'a, Message> {
-    container(text(tip).size(12))
+/// `content` with a hint box that shows after `delay_ms` of hovering.
+pub(super) fn with_tip<'a>(
+    content: impl Into<Element<'a, Message>>,
+    tip: &'a str,
+    position: tooltip::Position,
+    delay_ms: u64,
+) -> Element<'a, Message> {
+    let hint = container(text(tip).size(12))
         .padding([4, 8])
-        .style(hint_box)
+        .style(hint_box);
+    tooltip(content, hint, position)
+        .gap(6)
+        .delay(iced::time::Duration::from_millis(delay_ms))
         .into()
 }
 
@@ -66,7 +73,7 @@ pub(super) fn segment<'a>(
     tip: &'a str,
     message: Message,
 ) -> Element<'a, Message> {
-    tooltip(
+    with_tip(
         button(
             text(label)
                 .size(12)
@@ -75,15 +82,21 @@ pub(super) fn segment<'a>(
         .padding([4, 10])
         .style(segment_style(active))
         .on_press(message),
-        hint(tip),
+        tip,
         tooltip::Position::Top,
+        400,
     )
-    .gap(6)
-    .delay(iced::time::Duration::from_millis(400))
-    .into()
 }
 
-pub(super) fn segment_track(theme: &Theme) -> container::Style {
+/// Two [`segment`]s on one track.
+pub(super) fn switch<'a>(segments: [Element<'a, Message>; 2]) -> Element<'a, Message> {
+    container(row(segments).spacing(2))
+        .padding(2)
+        .style(segment_track)
+        .into()
+}
+
+fn segment_track(theme: &Theme) -> container::Style {
     let look = theme::tokens_of(theme);
     container::Style {
         background: Some(look.track.into()),
@@ -156,23 +169,10 @@ pub(super) fn menu_card(theme: &Theme) -> container::Style {
     }
 }
 
-pub(super) fn menu_item_style(theme: &Theme, status: button::Status) -> button::Style {
-    let look = theme::tokens_of(theme);
-    button::Style {
-        background: row_fill(look, false, status),
-        text_color: look.ink,
-        border: border::rounded(6),
-        ..button::Style::default()
-    }
-}
-
 pub(super) fn menu_danger_style(theme: &Theme, status: button::Status) -> button::Style {
-    let look = theme::tokens_of(theme);
     button::Style {
-        background: row_fill(look, false, status),
-        text_color: look.danger,
-        border: border::rounded(6),
-        ..button::Style::default()
+        text_color: theme::tokens_of(theme).danger,
+        ..quiet_button(theme, status)
     }
 }
 
@@ -203,7 +203,7 @@ pub(super) fn backlink_row(link: crate::links::Backlink) -> Element<'static, Mes
     button(body)
         .width(Fill)
         .padding([4, 8])
-        .style(backlink_style)
+        .style(quiet_button)
         .on_press(Message::Open(link.from))
         .into()
 }
@@ -214,20 +214,10 @@ fn muted_ink(theme: &Theme) -> text::Style {
     }
 }
 
-/// A full-width row that only shows a fill when hovered. Used for the
-/// backlink header, which is a disclosure, not an action.
+/// A full-width row that only shows a fill when hovered: menu items,
+/// backlinks, and the backlink header.
 pub(super) fn quiet_button(theme: &Theme, status: button::Status) -> button::Style {
-    backlink_style(theme, status)
-}
-
-fn backlink_style(theme: &Theme, status: button::Status) -> button::Style {
-    let look = theme::tokens_of(theme);
-    button::Style {
-        background: row_fill(look, false, status),
-        text_color: look.ink,
-        border: border::rounded(6),
-        ..button::Style::default()
-    }
+    flat_row(theme, status, false)
 }
 
 pub(super) fn tree_button<'a>(
@@ -448,14 +438,16 @@ fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
 }
 
 fn tree_row_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |theme, status| {
-        let look = theme::tokens_of(theme);
-        button::Style {
-            background: row_fill(look, selected, status),
-            text_color: look.ink,
-            border: border::rounded(6),
-            ..button::Style::default()
-        }
+    move |theme, status| flat_row(theme, status, selected)
+}
+
+fn flat_row(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
+    let look = theme::tokens_of(theme);
+    button::Style {
+        background: row_fill(look, selected, status),
+        text_color: look.ink,
+        border: border::rounded(6),
+        ..button::Style::default()
     }
 }
 
