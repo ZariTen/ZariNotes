@@ -26,12 +26,19 @@ impl Live {
         scrollable(
             container(
                 column(self.blocks(settings, note_dir.as_ref()))
-                    .max_width(820)
-                    .padding([24, 32]),
+                    .max_width(780)
+                    .padding([40, 40]),
             )
             .center_x(Fill)
             .padding(Padding::ZERO.bottom(200)),
         )
+        .direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::new()
+                .width(6)
+                .scroller_width(6)
+                .margin(3),
+        ))
+        .style(theme::scrollbar)
         .id(Id::new(SCROLL_ID))
         .height(Fill)
         .into()
@@ -272,6 +279,7 @@ fn markdown_settings(theme: &Theme) -> markdown::Settings {
     settings.code_size = (TEXT_SIZE * 0.875).into();
     settings.spacing = (TEXT_SIZE * 0.5).into();
     let look = crate::theme::tokens_of(theme);
+    settings.style.font = crate::UI_FONT;
     settings.style.link_color = look.link;
     // Stock markdown paints inline code white on black. Keep it on the theme.
     settings.style.inline_code_color = look.accent_text;

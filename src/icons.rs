@@ -108,6 +108,16 @@ pub fn refresh<'a>() -> Svg<'a> {
     icon(&REFRESH_H, 15.0, ink(0.9))
 }
 
+/// The sidebar's primary writing action.
+pub fn plus<'a>() -> Svg<'a> {
+    static PLUS: LazyLock<svg::Handle> = LazyLock::new(|| {
+        svg::Handle::from_memory(br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>"#)
+    });
+    icon(&PLUS, 16.0, |theme| {
+        crate::theme::tokens_of(theme).accent_text
+    })
+}
+
 /// Pull tab for the bottom-right corner of an image.
 pub fn resize_corner<'a>() -> Svg<'a> {
     icon(&RESIZE_CORNER_H, 12.0, ink(0.9))

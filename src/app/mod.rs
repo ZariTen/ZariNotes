@@ -30,6 +30,8 @@ use crate::tree::Dir;
 pub(crate) fn run() -> iced::Result {
     iced::application(App::new, App::update, App::view)
         .title(App::title)
+        .font(include_bytes!("../../assets/fonts/Inter.ttf").as_slice())
+        .default_font(crate::UI_FONT)
         .subscription(App::subscription)
         .theme(|app: &App| theme::iced(app.appearance))
         .window(window_settings())
@@ -39,7 +41,8 @@ pub(crate) fn run() -> iced::Result {
 /// Matches `zarinotes.desktop` so the launcher icon attaches to the window.
 fn window_settings() -> iced::window::Settings {
     iced::window::Settings {
-        size: iced::Size::new(1100.0, 720.0),
+        size: iced::Size::new(1180.0, 780.0),
+        min_size: Some(iced::Size::new(820.0, 540.0)),
         #[cfg(target_os = "linux")]
         platform_specific: iced::window::settings::PlatformSpecific {
             application_id: "zarinotes".into(),
@@ -142,6 +145,7 @@ struct CreatePrompt {
 #[derive(Debug, Clone)]
 enum Message {
     PickWorkspace,
+    NewNote,
     WorkspacePicked(Option<PathBuf>),
     Refresh,
     FilesScanned(crate::links::Scanned),
@@ -224,6 +228,10 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::PickWorkspace => self.pick_workspace(),
+            Message::NewNote => {
+                let _ = self.ask_create(PathBuf::new(), Point::new(26.0, 192.0), None);
+                self.pick_create(CreateKind::Note)
+            }
             Message::WorkspacePicked(None) => Task::none(),
             Message::WorkspacePicked(Some(dir)) => self.open_workspace(dir),
             Message::Refresh => self.scan(),
@@ -417,16 +425,16 @@ impl App {
 
 const SOURCE_EDITOR_ID: &str = "source-editor";
 const CREATE_NAME_ID: &str = "create-name";
-const SIDEBAR_WIDTH: f32 = 300.0;
+const SIDEBAR_WIDTH: f32 = 272.0;
 
 const MEDIUM: Font = Font {
     weight: Weight::Medium,
-    ..Font::DEFAULT
+    ..crate::UI_FONT
 };
 
 const LABEL: Font = Font {
     weight: Weight::Semibold,
-    ..Font::DEFAULT
+    ..crate::UI_FONT
 };
 
 fn live_input(msg: &live::Msg, selected: bool) -> history::Input {
@@ -478,5 +486,30 @@ fn live_resize(event: Event, _status: event::Status, _window: iced::window::Id) 
             Some(Message::Live(live::Msg::ResizeMove(position.x)))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod visual_workflow_tests {
+    use super::*;
+
+    #[test]
+    fn new_note_opens_a_focused_root_note_prompt() {
+        let (mut app, _) = App::new();
+        app.workspace = Some(PathBuf::from("workspace"));
+        let _ = app.update(Message::NewNote);
+        let prompt = app.create.as_ref().expect("new-note prompt");
+        assert_eq!(prompt.step, CreateStep::Name(CreateKind::Note));
+        assert!(prompt.parent.as_os_str().is_empty());
+        assert!(prompt.clicked.is_none());
+        assert!(prompt.name.is_empty());
+    }
+
+    #[test]
+    fn new_note_without_a_workspace_is_a_noop() {
+        let (mut app, _) = App::new();
+        app.workspace = None;
+        let _ = app.update(Message::NewNote);
+        assert!(app.create.is_none());
     }
 }

@@ -3,6 +3,9 @@
 //! Pick a workspace folder, browse its `.md` files, and edit them with an
 //! live preview (or as plain source).
 
+/// Embedded typography keeps UI weights consistent across Linux desktops.
+pub(crate) const UI_FONT: iced::Font = iced::Font::with_name("Inter");
+
 mod app;
 mod config;
 mod highlight;

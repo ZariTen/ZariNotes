@@ -6,7 +6,7 @@ use iced::widget::{
     button, column, container, float, mouse_area, row, rule, scrollable, space, stack, text,
     text_input,
 };
-use iced::{Element, Fill, Font, Padding, Point, Rectangle, Vector};
+use iced::{Element, Fill, Padding, Point, Rectangle, Vector};
 
 use super::style::{
     field_style, icon_button, line, menu_card, menu_danger_style, quiet_button, rounded_danger,
@@ -27,7 +27,24 @@ impl App {
         } else {
             self.closed_sidebar()
         };
-        container(body).padding(14).width(Fill).height(Fill).into()
+        container(column![self.brand(), body].spacing(28))
+            .padding(20)
+            .width(Fill)
+            .height(Fill)
+            .into()
+    }
+
+    fn brand(&self) -> Element<'_, Message> {
+        let look = theme::tokens(self.appearance);
+        row![
+            container(text("z").size(23).font(MEDIUM).color(look.accent_text))
+                .center(34)
+                .style(super::style::brand_mark),
+            text("ZariNotes").size(18).font(MEDIUM),
+        ]
+        .spacing(10)
+        .align_y(iced::Center)
+        .into()
     }
 
     /// Search bar and the note tree. A right-click opens a popup at the cursor.
@@ -35,11 +52,27 @@ impl App {
         let tree = column![
             self.workspace_header(),
             self.search_bar(),
-            rule::horizontal(1),
+            button(
+                row![icons::plus(), text("New note").size(13).font(LABEL)]
+                    .spacing(8)
+                    .align_y(iced::Center)
+            )
+            .width(Fill)
+            .padding([10, 12])
+            .style(rounded_primary)
+            .on_press(Message::NewNote),
             self.notes_header(),
-            scrollable(column(self.note_rows()).spacing(2)).height(Fill),
+            scrollable(column(self.note_rows()).spacing(2))
+                .style(theme::scrollbar)
+                .direction(scrollable::Direction::Vertical(
+                    scrollable::Scrollbar::new()
+                        .width(5)
+                        .scroller_width(5)
+                        .margin(2)
+                ))
+                .height(Fill),
         ]
-        .spacing(14)
+        .spacing(16)
         .width(Fill)
         .height(Fill);
         spot(tree, |at| Message::AskCreate {
@@ -50,22 +83,12 @@ impl App {
     }
 
     fn closed_sidebar(&self) -> Element<'_, Message> {
-        let muted = theme::tokens(self.appearance).muted;
-        column![
-            text("Notes").size(18).font(MEDIUM),
-            text("No folder open").size(14).color(muted),
-            text("Open a folder to list its Markdown notes.")
-                .size(13)
-                .color(muted)
-                .width(Fill),
-            button(text("Open folder").size(14))
-                .width(Fill)
-                .padding([10, 12])
-                .style(rounded_primary)
-                .on_press(Message::PickWorkspace),
-        ]
-        .spacing(10)
-        .into()
+        button(text("Open folder").size(14))
+            .width(Fill)
+            .padding([10, 12])
+            .style(rounded_primary)
+            .on_press(Message::PickWorkspace)
+            .into()
     }
 
     fn workspace_header(&self) -> Element<'_, Message> {
@@ -87,7 +110,7 @@ impl App {
     }
 
     fn search_bar(&self) -> Element<'_, Message> {
-        let input = text_input("Find a note…", &self.filter)
+        let input = text_input("Search notes…", &self.filter)
             .on_input(Message::FilterChanged)
             .padding([8, 10])
             .size(14)
@@ -205,7 +228,7 @@ impl App {
     fn notes_header(&self) -> Element<'_, Message> {
         let look = theme::tokens(self.appearance);
         row![
-            text("Notes").size(12).font(LABEL).color(look.muted),
+            text("Notes").size(10).font(LABEL).color(look.muted),
             space::horizontal(),
             text(note_count(&self.filter, &self.tree))
                 .size(12)
@@ -312,7 +335,7 @@ impl App {
         let mut parts = vec![
             space().width(14).into(),
             icons::file(selected).into(),
-            row_label(label, if selected { MEDIUM } else { Font::DEFAULT }),
+            row_label(label, if selected { MEDIUM } else { crate::UI_FONT }),
         ];
         if selected && self.dirty {
             parts.push(
@@ -375,6 +398,7 @@ fn choose_menu(can_delete: bool) -> Element<'static, Message> {
 fn popup_width(step: CreateStep) -> f32 {
     match step {
         CreateStep::ConfirmDelete => 260.0,
+        CreateStep::Name(_) => 320.0,
         _ => 180.0,
     }
 }
@@ -427,32 +451,13 @@ fn name_placeholder(kind: CreateKind) -> &'static str {
 
 fn workspace_title(workspace: &Path, appearance: theme::Appearance) -> Element<'static, Message> {
     let look = theme::tokens(appearance);
-    let mut title = column![
-        text("Workspace").size(12).font(LABEL).color(look.muted),
-        line(folder_name(workspace), 15.0, MEDIUM, look.ink),
-    ]
-    .spacing(2)
-    .width(Fill);
-    if let Some(parent) = parent_folder_name(workspace) {
-        title = title.push(line(
-            format!("in {parent}"),
-            12.0,
-            Font::DEFAULT,
-            look.muted,
-        ));
-    }
-    title.into()
+    line(folder_name(workspace), 15.0, MEDIUM, look.ink)
 }
 
 fn folder_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
-}
-
-fn parent_folder_name(path: &Path) -> Option<String> {
-    let parent = path.parent()?.file_name()?;
-    Some(parent.to_string_lossy().into_owned())
 }
 
 fn note_count(filter: &str, tree: &Dir) -> String {
@@ -471,7 +476,7 @@ fn note_count(filter: &str, tree: &Dir) -> String {
 fn empty_tree_message(filter: &str, appearance: theme::Appearance) -> Element<'static, Message> {
     let muted = theme::tokens(appearance).muted;
     let message = if filter.trim().is_empty() {
-        "No notes yet. Right-click to create a note or folder.".into()
+        "No notes".into()
     } else {
         format!("No notes match \"{}\".", filter.trim())
     };
@@ -496,7 +501,7 @@ fn hide_file(name: &str, query: &str, reveal_all: bool) -> bool {
 
 fn row_pad(depth: u16) -> Padding {
     const INDENT: f32 = 16.0;
-    Padding::from([6, 8]).left(8.0 + f32::from(depth) * INDENT)
+    Padding::from([9, 8]).left(8.0 + f32::from(depth) * INDENT)
 }
 
 #[cfg(test)]

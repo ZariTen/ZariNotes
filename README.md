@@ -4,6 +4,17 @@
 
 ZariNotes is an offline Markdown writer. It is free software, written in Rust with [iced](https://iced.rs). Notes stay in a folder on your computer. The license is GPL-3.0-or-later.
 
+## A quiet place to write
+
+Paper (warm ivory and deep teal) and Ink (charcoal and jade) share a clean,
+flat interface: a dedicated note header, a focused writing column, and a
+workspace sidebar with search and a one-click new-note action. Live/Source
+controls stay beside the note title; save state and writing statistics stay
+out of the way below the page.
+
+Interface typography uses bundled [Inter](https://rsms.me/inter/), licensed
+under the SIL Open Font License; see `assets/fonts/OFL.txt`.
+
 ## Install
 
 Linux. `./install.sh` builds the release binary and installs it, the desktop entry, and the icon under `~/.local` (no root). `~/.local/bin` must be on `PATH`. System-wide: `sudo PREFIX=/usr ./install.sh`. Log out and back in if the launcher does not show the new entry.

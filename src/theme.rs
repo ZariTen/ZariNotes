@@ -1,10 +1,8 @@
-//! Retro Classic (light) and Dolch Noir (dark).
+//! Paper (warm ivory and sage) and Ink (charcoal and muted jade).
 //!
-//! Surfaces follow the keyboard specs: canvas is the case, the panel is the
-//! modifier cluster, the writing surface is an alpha keycap, and accent
-//! buttons are the Esc/Enter keys. Success, warning, danger, and link colors
-//! are not in those specs; they are vintage-family tones chosen so they stay
-//! readable on the writing surface.
+//! Quiet, layered surfaces keep the writing in focus. Teal and jade provide
+//! restrained emphasis, while text and semantic tones retain WCAG AA contrast
+//! across the writing surface, sidebar, canvas, and raised controls.
 
 use iced::theme::Base;
 use iced::theme::palette::{self, Extended, Pair};
@@ -34,13 +32,13 @@ impl Appearance {
 
     pub fn title(self) -> &'static str {
         match self {
-            Self::Light => "Retro Classic",
-            Self::Dark => "Dolch Noir",
+            Self::Light => "Paper",
+            Self::Dark => "Ink",
         }
     }
 }
 
-/// Exact spec tokens, plus the few semantic colors the specs leave out.
+/// Shared surface, typography, interaction, and semantic color tokens.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tokens {
     pub canvas: Color,
@@ -72,8 +70,8 @@ const fn rgb(hex: u32) -> Color {
 
 pub fn tokens(appearance: Appearance) -> Tokens {
     match appearance {
-        Appearance::Light => RETRO,
-        Appearance::Dark => DOLCH,
+        Appearance::Light => PAPER,
+        Appearance::Dark => INK,
     }
 }
 
@@ -94,54 +92,51 @@ pub fn iced(appearance: Appearance) -> Theme {
     })
 }
 
-const RETRO: Tokens = Tokens {
-    canvas: rgb(0xE2DDD1),
-    surface: rgb(0xECE7DC),
-    panel: rgb(0xB8C4CE),
-    raised: rgb(0xF7F5EE),
-    track: rgb(0xD5CEBF),
-    accent: rgb(0x121417),
-    accent_hover: rgb(0x2A3038),
-    accent_text: rgb(0xECE7DC),
-    accent_edge: rgb(0x050607),
-    ink: rgb(0x1E2024),
-    muted: rgb(0x4A5056),
-    border: rgb(0xD5CEBF),
-    border_strong: rgb(0x9BAAB6),
-    lip: rgb(0xC4BCAC),
-    // Deep slate steel: the spec accent is near-black, which would vanish as a link.
-    link: rgb(0x3E5A68),
-    selection: rgb(0xC5D0D8),
-    success: rgb(0x3F5C38),
-    warning: rgb(0x8A5520),
-    danger: rgb(0x9C3B38),
-    focus: rgb(0x121417),
+const PAPER: Tokens = Tokens {
+    canvas: rgb(0xF3F1EA),
+    surface: rgb(0xFAF8F2),
+    panel: rgb(0xE7EBE5),
+    raised: rgb(0xFFFFFB),
+    track: rgb(0xE1E5DE),
+    accent: rgb(0x245B53),
+    accent_hover: rgb(0x1B4943),
+    accent_text: rgb(0xFCFBF6),
+    accent_edge: rgb(0x163F39),
+    ink: rgb(0x242D2A),
+    muted: rgb(0x59645E),
+    border: rgb(0xDCE1D8),
+    border_strong: rgb(0xB7C3B8),
+    lip: rgb(0xD1D8CE),
+    link: rgb(0x285F56),
+    selection: rgb(0xC9DCCF),
+    success: rgb(0x356342),
+    warning: rgb(0x805B24),
+    danger: rgb(0x9E4640),
+    focus: rgb(0x245B53),
     dark: false,
 };
 
-const DOLCH: Tokens = Tokens {
-    canvas: rgb(0x131417),
-    surface: rgb(0x2B2E33),
-    panel: rgb(0x1E2024),
-    raised: rgb(0x393D44),
-    track: rgb(0x24272C),
-    accent: rgb(0x528296),
-    accent_hover: rgb(0x6C9FB5),
-    // Spec allows white or inverse. Inverse is the higher-contrast of the two
-    // on this mid cyan (about 4.4:1; neither allowed legend clears 4.5).
-    accent_text: rgb(0x131417),
-    accent_edge: rgb(0x335564),
-    ink: rgb(0xEDEAE2),
-    muted: rgb(0x9AA0A6),
-    border: rgb(0x24272C),
-    border_strong: rgb(0x3D424A),
-    lip: rgb(0x15171A),
-    link: rgb(0x8EC3D4),
-    selection: rgb(0x3E5C6C),
-    success: rgb(0xB7C7A4),
-    warning: rgb(0xE4C07A),
-    danger: rgb(0xE7A29C),
-    focus: rgb(0x6C9FB5),
+const INK: Tokens = Tokens {
+    canvas: rgb(0x191E1C),
+    surface: rgb(0x202624),
+    panel: rgb(0x1C2220),
+    raised: rgb(0x29312D),
+    track: rgb(0x303B35),
+    accent: rgb(0x93B9A6),
+    accent_hover: rgb(0xADCBBB),
+    accent_text: rgb(0x18241E),
+    accent_edge: rgb(0x618D78),
+    ink: rgb(0xE9EDE5),
+    muted: rgb(0xADB8AE),
+    border: rgb(0x303B35),
+    border_strong: rgb(0x4F6156),
+    lip: rgb(0x101613),
+    link: rgb(0xA0C9B4),
+    selection: rgb(0x384F43),
+    success: rgb(0xAAC696),
+    warning: rgb(0xD9BB80),
+    danger: rgb(0xE5A39A),
+    focus: rgb(0x93B9A6),
     dark: true,
 };
 
@@ -160,8 +155,8 @@ fn text_on(color: Color, text: Color) -> Pair {
     Pair { color, text }
 }
 
-/// Map spec surfaces onto iced's generated slots so stock widgets (rules,
-/// scrollbars, inputs, primary buttons) land on the keyboard colors.
+/// Map editorial surfaces onto iced's slots so stock widgets (rules,
+/// scrollbars, inputs, primary buttons) share the same visual hierarchy.
 fn extended(look: Tokens) -> Extended {
     Extended {
         background: background_slots(look),
@@ -239,6 +234,42 @@ fn danger_slots(look: Tokens) -> palette::Danger {
     }
 }
 
+/// Quiet rails keep navigation visible without competing with the page.
+pub fn scrollbar(
+    theme: &Theme,
+    status: iced::widget::scrollable::Status,
+) -> iced::widget::scrollable::Style {
+    use iced::widget::scrollable::{self, Status};
+    let look = tokens_of(theme);
+    let mut style = scrollable::default(theme, status);
+    let alpha = if matches!(status, Status::Dragged { .. }) {
+        0.6
+    } else {
+        0.28
+    };
+    for rail in [&mut style.vertical_rail, &mut style.horizontal_rail] {
+        rail.background = None;
+        rail.scroller.background = look.muted.scale_alpha(alpha).into();
+        rail.scroller.border = iced::border::rounded(8);
+    }
+    match status {
+        Status::Hovered {
+            is_vertical_scrollbar_hovered: true,
+            ..
+        } => {
+            style.vertical_rail.scroller.background = look.muted.scale_alpha(0.55).into();
+        }
+        Status::Hovered {
+            is_horizontal_scrollbar_hovered: true,
+            ..
+        } => {
+            style.horizontal_rail.scroller.background = look.muted.scale_alpha(0.55).into();
+        }
+        _ => {}
+    }
+    style
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Appearance, iced, tokens, tokens_of};
@@ -249,56 +280,61 @@ mod tests {
         assert_eq!(Appearance::parse("light"), Some(Appearance::Light));
         assert_eq!(Appearance::parse("dark"), Some(Appearance::Dark));
         assert_eq!(Appearance::parse("tokyo"), None);
-        assert_eq!(
-            Appearance::parse(Appearance::Light.as_str()),
-            Some(Appearance::Light)
-        );
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            assert_eq!(Appearance::parse(appearance.as_str()), Some(appearance));
+        }
+        assert_eq!(Appearance::Light.as_str(), "light");
+        assert_eq!(Appearance::Dark.as_str(), "dark");
+        assert_eq!(Appearance::Light.title(), "Paper");
+        assert_eq!(Appearance::Dark.title(), "Ink");
     }
 
     #[test]
-    fn themes_keep_spec_colors_and_readable_text() {
+    fn themes_keep_editorial_colors_and_readable_text() {
         for appearance in [Appearance::Light, Appearance::Dark] {
             let theme = iced(appearance);
             let t = tokens_of(&theme);
             assert_eq!(theme.name(), appearance.title());
-            assert_eq!(t.ink, tokens(appearance).ink);
+            assert_eq!(t, tokens(appearance));
+            for (surface_name, surface) in [
+                ("surface", t.surface),
+                ("panel", t.panel),
+                ("canvas", t.canvas),
+                ("raised", t.raised),
+            ] {
+                for (text_name, text) in [
+                    ("ink", t.ink),
+                    ("muted", t.muted),
+                    ("link", t.link),
+                    ("success", t.success),
+                    ("warning", t.warning),
+                    ("danger", t.danger),
+                ] {
+                    assert!(
+                        text.relative_contrast(surface) >= 4.5,
+                        "{appearance:?} {text_name}/{surface_name} must meet WCAG AA"
+                    );
+                }
+            }
+            for (name, fill) in [("accent", t.accent), ("accent_hover", t.accent_hover)] {
+                assert!(
+                    t.accent_text.relative_contrast(fill) >= 4.5,
+                    "{appearance:?} accent_text/{name} must meet WCAG AA"
+                );
+            }
+            for (name, surface) in [
+                ("surface", t.surface),
+                ("panel", t.panel),
+                ("canvas", t.canvas),
+            ] {
+                assert!(
+                    t.selection.relative_contrast(surface) >= 1.15,
+                    "{appearance:?} selection/{name} must remain visible"
+                );
+            }
             assert!(
-                t.ink.relative_contrast(t.surface) >= 4.5,
-                "{appearance:?} ink/surface"
-            );
-            assert!(
-                t.ink.relative_contrast(t.panel) >= 4.5,
-                "{appearance:?} ink/panel"
-            );
-            assert!(
-                t.ink.relative_contrast(t.canvas) >= 4.5,
-                "{appearance:?} ink/canvas"
-            );
-            // Dolch's accent cyan is mid-luminance; the spec's own legend colors top out near 4.4:1.
-            let accent_floor = if t.dark { 4.3 } else { 4.5 };
-            assert!(
-                t.accent_text.relative_contrast(t.accent) >= accent_floor,
-                "{appearance:?} accent"
-            );
-            assert!(
-                t.link.relative_contrast(t.surface) >= 4.5,
-                "{appearance:?} link"
-            );
-            assert!(
-                t.success.relative_contrast(t.surface) >= 4.5,
-                "{appearance:?} success"
-            );
-            assert!(
-                t.warning.relative_contrast(t.surface) >= 4.5,
-                "{appearance:?} warning"
-            );
-            assert!(
-                t.danger.relative_contrast(t.surface) >= 4.5,
-                "{appearance:?} danger"
-            );
-            assert!(
-                t.selection.relative_contrast(t.surface) >= 1.15,
-                "{appearance:?} selection"
+                t.ink.relative_contrast(t.selection) >= 4.5,
+                "{appearance:?} ink/selection must meet WCAG AA"
             );
             assert_ne!(t.panel, t.raised);
             assert_ne!(t.track, t.canvas);

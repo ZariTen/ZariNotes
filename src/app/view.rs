@@ -2,22 +2,32 @@
 
 use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::text_editor::{Binding, Content, KeyPress};
-use iced::widget::{button, column, container, row, scrollable, text, text_editor, tooltip};
+use iced::widget::{
+    button, column, container, row, rule, scrollable, space, text, text_editor, tooltip,
+};
 use iced::{Element, Fill, Font};
 
 use super::style::{
     backlink_row, chassis, editor_style, line, panel, quiet_button, segment, switch, unsaved_style,
     with_tip, word_count, words_label, writing_surface,
 };
-use super::{App, Doc, Message, Mode, SIDEBAR_WIDTH, SOURCE_EDITOR_ID};
+use super::{App, Doc, MEDIUM, Message, Mode, SIDEBAR_WIDTH, SOURCE_EDITOR_ID};
 use crate::highlight;
 use crate::live::{self, Live};
 use crate::theme::{self, Appearance};
 
 impl App {
     pub(super) fn view(&self) -> Element<'_, Message> {
-        let page = container(self.editor_pane())
-            .padding([8.0, 12.0])
+        let content = if self.doc.is_some() {
+            column![
+                self.editor_header(),
+                rule::horizontal(1),
+                self.editor_pane()
+            ]
+        } else {
+            column![self.editor_pane()]
+        };
+        let page = container(content)
             .style(writing_surface)
             .clip(true)
             .width(Fill)
@@ -37,16 +47,34 @@ impl App {
                 .height(Fill),
             main
         ]
-        .spacing(8)
+        .spacing(12)
         .height(Fill);
 
         self.layer_popup(
             container(body)
-                .padding(8)
+                .padding(12)
                 .style(chassis)
                 .width(Fill)
                 .height(Fill),
         )
+    }
+
+    fn editor_header(&self) -> Element<'_, Message> {
+        let look = theme::tokens(self.appearance);
+        let title = self
+            .current
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let header = row![
+            crate::icons::file(true),
+            line(title, 13.0, MEDIUM, look.ink),
+            self.mode_switch(),
+        ]
+        .spacing(10)
+        .align_y(iced::Center);
+        container(header).padding([14, 20]).width(Fill).into()
     }
 
     fn editor_pane(&self) -> Element<'_, Message> {
@@ -56,19 +84,18 @@ impl App {
                 live_editor(live, self.appearance, note_dir.as_deref())
             }
             Some(Doc::Source(content)) => source_editor(content),
-            None => empty_editor(),
+            None => self.empty_editor(),
         }
     }
 
-    /// Quiet writing context: the open note, save state, word count, cursor,
-    /// a Live / Source switch, and the light / dark theme switch.
+    /// Save state, word count, cursor, and appearance. Editing mode lives in the header.
     fn footer(&self) -> Element<'_, Message> {
         row![
             container(self.footer_status()).width(Fill).clip(true),
             row(self.footer_stats()).spacing(16)
         ]
         .spacing(16)
-        .padding([2, 4])
+        .padding([3, 8])
         .align_y(iced::Center)
         .into()
     }
@@ -76,18 +103,18 @@ impl App {
     fn footer_status(&self) -> Element<'_, Message> {
         let look = theme::tokens(self.appearance);
         if let Some(err) = &self.notice {
-            return line(err.clone(), 12.0, Font::DEFAULT, look.danger);
+            return line(err.clone(), 12.0, crate::UI_FONT, look.danger);
         }
         if let Some(rel) = &self.current {
             return row![
                 self.save_state(),
-                line(rel.display().to_string(), 12.0, Font::DEFAULT, look.ink),
+                line(rel.display().to_string(), 12.0, crate::UI_FONT, look.ink),
             ]
             .spacing(8)
             .align_y(iced::Center)
             .into();
         }
-        text("No note open").size(12).color(look.muted).into()
+        space().into()
     }
 
     /// Notes that link here. The header stays, so the list can be folded away
@@ -97,6 +124,9 @@ impl App {
             return column![].into();
         };
         let links = self.links.backlinks(current);
+        if links.is_empty() {
+            return column![].into();
+        }
         let header = self.backlinks_header(links.len());
         if links.is_empty() || !self.backlinks_open {
             return header;
@@ -105,7 +135,7 @@ impl App {
         // A popular note must not push the editor off the window.
         column![
             header,
-            container(scrollable(column(rows).spacing(2)))
+            container(scrollable(column(rows).spacing(2)).style(theme::scrollbar))
                 .max_height(112)
                 .width(Fill),
         ]
@@ -166,7 +196,6 @@ impl App {
                         .into(),
                 );
             }
-            stats.push(self.mode_switch());
         }
         stats.push(self.theme_switch());
         stats
@@ -177,16 +206,29 @@ impl App {
             segment(
                 "Light",
                 self.appearance == Appearance::Light,
-                "Retro Classic — vintage beige and slate",
+                "Paper — warm ivory and deep teal",
                 Message::SetAppearance(Appearance::Light),
             ),
             segment(
                 "Dark",
                 self.appearance == Appearance::Dark,
-                "Dolch Noir — charcoal and signal steel",
+                "Ink — charcoal and soft jade",
                 Message::SetAppearance(Appearance::Dark),
             ),
         ])
+    }
+
+    fn empty_editor(&self) -> Element<'_, Message> {
+        let action: Element<'_, Message> = if self.workspace.is_some() {
+            button(text("New note").size(13).font(super::LABEL))
+                .padding([11, 20])
+                .style(super::style::rounded_primary)
+                .on_press(Message::NewNote)
+                .into()
+        } else {
+            space().into()
+        };
+        container(action).center(Fill).into()
     }
 
     fn mode_switch(&self) -> Element<'_, Message> {
@@ -228,7 +270,7 @@ fn source_editor(content: &Content) -> Element<'_, Message> {
         .key_binding(editor_bindings)
         .font(Font::MONOSPACE)
         .size(15)
-        .padding(16)
+        .padding(32)
         .height(Fill)
         .style(editor_style)
         .into()
@@ -240,12 +282,6 @@ fn backlinks_label(n: usize) -> String {
         1 => "1 backlink".into(),
         n => format!("{n} backlinks"),
     }
-}
-
-fn empty_editor() -> Element<'static, Message> {
-    container(text("Select or create a note.").size(16))
-        .center(Fill)
-        .into()
 }
 
 /// Ctrl+S saves, Ctrl+Z undoes, Ctrl+Shift+Z / Ctrl+Y redoes, Ctrl+E toggles

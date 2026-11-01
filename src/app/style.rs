@@ -77,7 +77,7 @@ pub(super) fn segment<'a>(
         button(
             text(label)
                 .size(12)
-                .font(if active { LABEL } else { Font::DEFAULT }),
+                .font(if active { LABEL } else { crate::UI_FONT }),
         )
         .padding([4, 10])
         .style(segment_style(active))
@@ -245,7 +245,21 @@ pub(super) fn chassis(theme: &Theme) -> container::Style {
 
 pub(super) fn panel(theme: &Theme) -> container::Style {
     let look = theme::tokens_of(theme);
-    card(look.panel, look)
+    container::Style {
+        background: Some(look.panel.into()),
+        text_color: Some(look.ink),
+        border: border::rounded(12),
+        ..container::Style::default()
+    }
+}
+
+pub(super) fn brand_mark(theme: &Theme) -> container::Style {
+    let look = theme::tokens_of(theme);
+    container::Style {
+        background: Some(look.accent.into()),
+        border: border::rounded(10),
+        ..container::Style::default()
+    }
 }
 
 pub(super) fn writing_surface(theme: &Theme) -> container::Style {
@@ -257,8 +271,11 @@ fn card(background: Color, look: theme::Tokens) -> container::Style {
     container::Style {
         background: Some(background.into()),
         text_color: Some(look.ink),
-        border: hairline(look.border),
-        shadow: card_shadow(look.dark),
+        border: Border {
+            radius: 12.0.into(),
+            ..hairline(look.border)
+        },
+        shadow: Shadow::default(),
         ..container::Style::default()
     }
 }
@@ -267,7 +284,7 @@ fn hairline(color: Color) -> Border {
     Border {
         color,
         width: 1.0,
-        radius: 6.0.into(),
+        radius: 8.0.into(),
     }
 }
 
@@ -299,7 +316,8 @@ fn hint_box(theme: &Theme) -> container::Style {
 pub(super) fn editor_style(theme: &Theme, _status: text_editor::Status) -> text_editor::Style {
     let look = theme::tokens_of(theme);
     text_editor::Style {
-        background: look.surface.into(),
+        // Let the rounded writing surface paint the page, including its corners.
+        background: Color::TRANSPARENT.into(),
         border: Border::default(),
         placeholder: look.muted,
         value: look.ink,
@@ -367,12 +385,12 @@ fn danger_text(look: theme::Tokens) -> Color {
     if look.dark { look.canvas } else { look.raised }
 }
 
-/// Alpha or accent key: fill, a 2px lip, and no lip once the key is down.
+/// Flat, softly rounded actions; interaction is expressed through tone.
 fn keycap(
     rest: Color,
     hover: Color,
     text: Color,
-    lip: Color,
+    _lip: Color,
     edge: Color,
     status: button::Status,
 ) -> button::Style {
@@ -380,7 +398,7 @@ fn keycap(
         background: Some(key_fill(rest, hover, status).into()),
         text_color: text,
         border: hairline(edge),
-        shadow: key_shadow(lip, status),
+        shadow: Shadow::default(),
         ..button::Style::default()
     };
     dim_if_disabled(style, status)
@@ -391,18 +409,6 @@ fn key_fill(rest: Color, hover: Color, status: button::Status) -> Color {
         hover
     } else {
         rest
-    }
-}
-
-fn key_shadow(lip: Color, status: button::Status) -> Shadow {
-    let down = status == button::Status::Pressed || status == button::Status::Disabled;
-    if down {
-        return Shadow::default();
-    }
-    Shadow {
-        color: lip,
-        offset: Vector::new(0.0, 2.0),
-        blur_radius: 0.0,
     }
 }
 
@@ -445,8 +451,16 @@ fn flat_row(theme: &Theme, status: button::Status, selected: bool) -> button::St
     let look = theme::tokens_of(theme);
     button::Style {
         background: row_fill(look, selected, status),
-        text_color: look.ink,
-        border: border::rounded(6),
+        text_color: if selected { look.link } else { look.ink },
+        border: Border {
+            color: if selected {
+                look.accent.scale_alpha(0.18)
+            } else {
+                Color::TRANSPARENT
+            },
+            width: 1.0,
+            radius: 8.0.into(),
+        },
         ..button::Style::default()
     }
 }
@@ -468,15 +482,43 @@ fn row_fill(
 
 fn selected_alpha(status: button::Status) -> f32 {
     if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        0.28
-    } else {
         0.16
+    } else {
+        0.10
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{word_count, words_label};
+
+    #[test]
+    fn chrome_stays_flat_and_selected_notes_stay_distinct() {
+        for appearance in [
+            crate::theme::Appearance::Light,
+            crate::theme::Appearance::Dark,
+        ] {
+            let theme = crate::theme::iced(appearance);
+            assert_eq!(super::panel(&theme).shadow, iced::Shadow::default());
+            assert_eq!(
+                super::writing_surface(&theme).shadow,
+                iced::Shadow::default()
+            );
+            for status in [
+                iced::widget::button::Status::Active,
+                iced::widget::button::Status::Hovered,
+                iced::widget::button::Status::Pressed,
+                iced::widget::button::Status::Disabled,
+            ] {
+                let action = super::rounded_primary(&theme, status);
+                assert_eq!(action.shadow, iced::Shadow::default());
+                assert_ne!(
+                    super::flat_row(&theme, status, true).background,
+                    super::flat_row(&theme, status, false).background
+                );
+            }
+        }
+    }
 
     #[test]
     fn word_count_splits_on_whitespace() {

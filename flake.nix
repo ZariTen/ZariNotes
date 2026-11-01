@@ -68,6 +68,7 @@
             test -x $out/bin/zarinotes
             cmp $src/assets/zarinotes.desktop $out/share/applications/zarinotes.desktop
             cmp $src/assets/icon.svg $out/share/icons/hicolor/scalable/apps/zarinotes.svg
+            cmp $src/assets/fonts/OFL.txt $out/share/licenses/zarinotes/Inter-OFL.txt
             runHook postInstallCheck
           '';
 
