@@ -3,8 +3,8 @@
 //! Pick a workspace folder, browse its `.md` files, and edit them with an
 //! live preview (or as plain source).
 
-/// Embedded typography keeps UI weights consistent across Linux desktops.
-pub(crate) const UI_FONT: iced::Font = iced::Font::with_name("Inter");
+/// The UI typeface, the system default sans-serif; see [`system_font`].
+pub(crate) const UI_FONT: iced::Font = iced::Font::with_name(system_font::FAMILY);
 
 mod app;
 mod config;
@@ -14,9 +14,11 @@ mod images;
 mod links;
 mod live;
 mod spot;
+mod system_font;
 mod theme;
 mod tree;
 
 fn main() -> iced::Result {
+    system_font::register();
     app::run()
 }

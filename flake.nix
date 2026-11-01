@@ -58,7 +58,7 @@
           postInstall = ''
             wrapProgram $out/bin/zarinotes \
               --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath libs} \
-              --prefix PATH : ${lib.makeBinPath [ pkgs.wl-clipboard pkgs.xclip ]}
+              --prefix PATH : ${lib.makeBinPath [ pkgs.wl-clipboard pkgs.xclip pkgs.fontconfig ]}
             SKIP_BUILD=1 PREFIX=$out ROOT=$src sh ${./install.sh}
           '';
 
@@ -68,7 +68,6 @@
             test -x $out/bin/zarinotes
             cmp $src/assets/zarinotes.desktop $out/share/applications/zarinotes.desktop
             cmp $src/assets/icon.svg $out/share/icons/hicolor/scalable/apps/zarinotes.svg
-            cmp $src/assets/fonts/OFL.txt $out/share/licenses/zarinotes/Inter-OFL.txt
             runHook postInstallCheck
           '';
 

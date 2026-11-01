@@ -16,7 +16,6 @@ fi
 
 install -Dm644 "$root/assets/zarinotes.desktop" "$prefix/share/applications/zarinotes.desktop"
 install -Dm644 "$root/assets/icon.svg" "$prefix/share/icons/hicolor/scalable/apps/zarinotes.svg"
-install -Dm644 "$root/assets/fonts/OFL.txt" "$prefix/share/licenses/zarinotes/Inter-OFL.txt"
 
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$prefix/share/applications" || true

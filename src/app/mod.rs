@@ -31,7 +31,6 @@ use crate::tree::Dir;
 pub(crate) fn run() -> iced::Result {
     iced::application(App::new, App::update, App::view)
         .title(App::title)
-        .font(include_bytes!("../../assets/fonts/Inter.ttf").as_slice())
         .default_font(crate::UI_FONT)
         .subscription(App::subscription)
         .theme(App::app_theme)
