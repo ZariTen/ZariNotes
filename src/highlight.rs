@@ -96,7 +96,7 @@ pub fn to_format(highlight: &Highlight, theme: &Theme) -> Format<Font> {
     let base = if highlight.mono {
         Font::MONOSPACE
     } else {
-        crate::UI_FONT
+        crate::NOTE_FONT
     };
     let (color, font) = look_of(highlight.kind, base, theme);
     Format { color, font }

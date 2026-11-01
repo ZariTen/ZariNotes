@@ -210,7 +210,10 @@ impl App {
             notice: None,
             appearance,
             customization,
-            settings: settings::State::new(customization.colors(appearance)),
+            settings: settings::State::new(
+                customization.colors(appearance),
+                crate::config::load_fonts(),
+            ),
             backlinks_open: load_backlinks_open(),
         };
 

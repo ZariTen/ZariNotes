@@ -279,7 +279,7 @@ fn markdown_settings(theme: &Theme) -> markdown::Settings {
     settings.code_size = (TEXT_SIZE * 0.875).into();
     settings.spacing = (TEXT_SIZE * 0.5).into();
     let look = crate::theme::tokens_of(theme);
-    settings.style.font = crate::UI_FONT;
+    settings.style.font = crate::NOTE_FONT;
     settings.style.link_color = look.link;
     // Stock markdown paints inline code white on black. Keep it on the theme.
     settings.style.inline_code_color = look.accent_text;

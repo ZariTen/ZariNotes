@@ -1,4 +1,4 @@
-//! Last workspace and theme, under `$XDG_CONFIG_HOME/zarinotes`.
+//! Last workspace, theme, and fonts, under `$XDG_CONFIG_HOME/zarinotes`.
 
 use std::path::{Path, PathBuf};
 
@@ -8,6 +8,7 @@ const LAST_WORKSPACE_FILE: &str = "last_workspace";
 const APPEARANCE_FILE: &str = "theme";
 const BACKLINKS_FILE: &str = "backlinks";
 const COLORS_FILE: &str = "colors";
+const FONTS_FILE: &str = "fonts";
 
 /// `$XDG_CONFIG_HOME/zarinotes`, or `~/.config/zarinotes` when that variable
 /// is unset.
@@ -24,7 +25,8 @@ fn read_config(name: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// Callers other than colors ignore failures: those files are conveniences.
+/// Callers other than colors and fonts ignore failures: those files are
+/// conveniences.
 fn write_config(name: &str, bytes: &[u8]) -> std::io::Result<()> {
     let dir = config_dir().ok_or_else(|| {
         std::io::Error::new(
@@ -149,6 +151,46 @@ fn serialize_customization(customization: &Customization) -> std::io::Result<Str
     Ok(text)
 }
 
+/// Chosen font families. `None` means the system default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Fonts {
+    pub interface: Option<String>,
+    pub note: Option<String>,
+}
+
+pub(crate) fn load_fonts() -> Fonts {
+    read_config(FONTS_FILE).map_or_else(Fonts::default, |text| parse_fonts(&text))
+}
+
+pub(crate) fn save_fonts(fonts: &Fonts) -> std::io::Result<()> {
+    write_config(FONTS_FILE, serialize_fonts(fonts).as_bytes())
+}
+
+/// Lines of `interface=<family>` and `note=<family>`. A missing line means
+/// the system default; unknown lines are skipped.
+fn parse_fonts(text: &str) -> Fonts {
+    let mut fonts = Fonts::default();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let family = Some(value.trim().to_owned()).filter(|family| !family.is_empty());
+        match key.trim() {
+            "interface" => fonts.interface = family,
+            "note" => fonts.note = family,
+            _ => {}
+        }
+    }
+    fonts
+}
+
+fn serialize_fonts(fonts: &Fonts) -> String {
+    [("interface", &fonts.interface), ("note", &fonts.note)]
+        .into_iter()
+        .filter_map(|(key, family)| Some(format!("{key}={}\n", family.as_ref()?)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +231,40 @@ mod tests {
         assert_eq!(
             parse_customization(&valid.replace("dark.text=", "dark.unknown=")),
             Customization::default()
+        );
+    }
+
+    #[test]
+    fn font_choices_round_trip() {
+        let fonts = Fonts {
+            interface: Some("Noto Sans".into()),
+            note: Some("DejaVu Serif".into()),
+        };
+        let text = serialize_fonts(&fonts);
+        assert_eq!(text, "interface=Noto Sans\nnote=DejaVu Serif\n");
+        assert_eq!(parse_fonts(&text), fonts);
+        let interface_only = Fonts {
+            note: None,
+            ..fonts
+        };
+        assert_eq!(
+            parse_fonts(&serialize_fonts(&interface_only)),
+            interface_only
+        );
+        assert_eq!(serialize_fonts(&Fonts::default()), "");
+    }
+
+    #[test]
+    fn missing_or_malformed_font_lines_mean_the_system_default() {
+        for text in ["", "note=\n", "# comment\nunknown=Inter\ninterface\n"] {
+            assert_eq!(parse_fonts(text), Fonts::default());
+        }
+        assert_eq!(
+            parse_fonts(" note = Cantarell \n"),
+            Fonts {
+                interface: None,
+                note: Some("Cantarell".into()),
+            }
         );
     }
 }

@@ -1,6 +1,9 @@
 //! Sidebar and editor chrome: buttons, fields, and surfaces.
 
-use iced::widget::{button, column, container, row, text, text_editor, text_input, tooltip};
+use iced::overlay::menu;
+use iced::widget::{
+    button, column, container, pick_list, row, text, text_editor, text_input, tooltip,
+};
 use iced::{Border, Color, Element, Fill, Font, Padding, Shadow, Theme, Vector, border};
 
 use super::{LABEL, Message};
@@ -318,6 +321,35 @@ pub(super) fn editor_style(theme: &Theme, _status: text_editor::Status) -> text_
         placeholder: look.muted,
         value: look.ink,
         selection: look.selection,
+    }
+}
+
+/// A compact dropdown that matches [`field_style`].
+pub(super) fn picker_style(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let look = theme::tokens_of(theme);
+    let border = match status {
+        pick_list::Status::Opened { .. } => look.focus,
+        pick_list::Status::Hovered => look.border_strong,
+        pick_list::Status::Active => look.border,
+    };
+    pick_list::Style {
+        text_color: look.ink,
+        placeholder_color: look.muted,
+        handle_color: look.muted,
+        background: look.surface.into(),
+        border: hairline(border),
+    }
+}
+
+pub(super) fn picker_menu(theme: &Theme) -> menu::Style {
+    let look = theme::tokens_of(theme);
+    menu::Style {
+        background: look.raised.into(),
+        border: hairline(look.border_strong),
+        text_color: look.ink,
+        selected_text_color: look.ink,
+        selected_background: look.selection.into(),
+        shadow: card_shadow(look.dark),
     }
 }
 

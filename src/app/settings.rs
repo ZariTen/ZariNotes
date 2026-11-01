@@ -1,13 +1,20 @@
-//! Appearance controls. Editing modes remain in the note header.
+//! Appearance and font controls. Editing modes remain in the note header.
 
 use iced::widget::{
-    button, column, container, mouse_area, row, scrollable, space, stack, text, text_input,
+    button, column, container, mouse_area, pick_list, row, scrollable, space, stack, text,
+    text_input,
 };
 use iced::{Border, Color, Element, Fill, Padding, Task};
 
-use super::style::{field_style, icon_button, menu_card, rounded_subtle, segment, switch};
+use super::style::{
+    field_style, icon_button, menu_card, picker_menu, picker_style, rounded_subtle, segment, switch,
+};
 use super::{App, LABEL, Message};
+use crate::config::Fonts;
+use crate::system_font;
 use crate::theme::{self, Appearance, ColorSlot, Colors};
+
+const SYSTEM_DEFAULT: &str = "System default";
 
 #[derive(Debug, Clone)]
 pub(super) enum Msg {
@@ -18,6 +25,43 @@ pub(super) enum Msg {
     PickColor(ColorSlot, Color),
     TogglePicker(ColorSlot),
     Reset,
+    PickFont(FontTarget, String),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum FontTarget {
+    Interface,
+    Note,
+}
+
+impl FontTarget {
+    fn label(self) -> &'static str {
+        match self {
+            FontTarget::Interface => "Interface font",
+            FontTarget::Note => "Note font",
+        }
+    }
+
+    fn alias(self) -> &'static str {
+        match self {
+            FontTarget::Interface => system_font::UI_FAMILY,
+            FontTarget::Note => system_font::NOTE_FAMILY,
+        }
+    }
+
+    fn choice(self, fonts: &Fonts) -> Option<&String> {
+        match self {
+            FontTarget::Interface => fonts.interface.as_ref(),
+            FontTarget::Note => fonts.note.as_ref(),
+        }
+    }
+
+    fn set(self, fonts: &mut Fonts, family: Option<String>) {
+        match self {
+            FontTarget::Interface => fonts.interface = family,
+            FontTarget::Note => fonts.note = family,
+        }
+    }
 }
 
 pub(super) struct State {
@@ -28,15 +72,20 @@ pub(super) struct State {
     /// while the user is typing.
     hex_drafts: [String; 4],
     save_error: Option<String>,
+    fonts: Fonts,
+    /// [`SYSTEM_DEFAULT`], then the installed families. Filled on open.
+    font_options: Vec<String>,
 }
 
 impl State {
-    pub fn new(colors: Colors) -> Self {
+    pub fn new(colors: Colors, fonts: Fonts) -> Self {
         Self {
             open: false,
             open_picker: None,
             hex_drafts: hex_drafts(colors),
             save_error: None,
+            fonts,
+            font_options: Vec::new(),
         }
     }
 
@@ -65,6 +114,9 @@ impl App {
                 self.create = None;
                 self.settings
                     .sync(self.customization.colors(self.appearance));
+                self.settings.font_options = std::iter::once(SYSTEM_DEFAULT.to_owned())
+                    .chain(system_font::families())
+                    .collect();
                 self.settings.open = true;
             }
             Msg::Close => {
@@ -91,6 +143,13 @@ impl App {
                     .sync(self.customization.colors(self.appearance));
                 self.persist_colors();
             }
+            Msg::PickFont(target, choice) => {
+                let family = (choice != SYSTEM_DEFAULT).then_some(choice);
+                system_font::apply(target.alias(), family.as_deref());
+                target.set(&mut self.settings.fonts, family);
+                let saved = crate::config::save_fonts(&self.settings.fonts);
+                self.record_save(saved);
+            }
         }
         Task::none()
     }
@@ -103,7 +162,12 @@ impl App {
     }
 
     fn persist_colors(&mut self) {
-        self.settings.save_error = crate::config::save_customization(&self.customization)
+        let saved = crate::config::save_customization(&self.customization);
+        self.record_save(saved);
+    }
+
+    fn record_save(&mut self, saved: std::io::Result<()>) {
+        self.settings.save_error = saved
             .err()
             .map(|error| format!("Could not save settings: {error}"));
     }
@@ -167,6 +231,8 @@ impl App {
                 ]),
             ]
             .align_y(iced::Center),
+            self.font_control(FontTarget::Interface),
+            self.font_control(FontTarget::Note),
         ]
         .spacing(10)
         .width(Fill);
@@ -194,6 +260,32 @@ impl App {
                 .style(rounded_subtle)
                 .on_press(Message::Settings(Msg::Reset)),
         )
+        .into()
+    }
+
+    fn font_control(&self, target: FontTarget) -> Element<'_, Message> {
+        let options = &self.settings.font_options;
+        // A saved family that is no longer installed shows as the default it falls back to.
+        let chosen = target
+            .choice(&self.settings.fonts)
+            .filter(|family| options.contains(family))
+            .map_or(SYSTEM_DEFAULT, String::as_str);
+        row![
+            text(target.label()).size(13).width(Fill),
+            pick_list(options.as_slice(), Some(chosen.to_owned()), move |choice| {
+                Message::Settings(Msg::PickFont(target, choice))
+            })
+            // The list stays readable even when the chosen font is not.
+            .font(crate::DEFAULT_FONT)
+            .text_size(13)
+            .padding([8, 10])
+            .width(180)
+            .menu_height(240)
+            .style(picker_style)
+            .menu_style(picker_menu),
+        ]
+        .spacing(10)
+        .align_y(iced::Center)
         .into()
     }
 
