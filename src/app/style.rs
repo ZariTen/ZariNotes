@@ -264,18 +264,13 @@ pub(super) fn brand_mark(theme: &Theme) -> container::Style {
 
 pub(super) fn writing_surface(theme: &Theme) -> container::Style {
     let look = theme::tokens_of(theme);
-    card(look.surface, look)
-}
-
-fn card(background: Color, look: theme::Tokens) -> container::Style {
     container::Style {
-        background: Some(background.into()),
+        background: Some(look.surface.into()),
         text_color: Some(look.ink),
         border: Border {
             radius: 12.0.into(),
             ..hairline(look.border)
         },
-        shadow: Shadow::default(),
         ..container::Style::default()
     }
 }
@@ -351,7 +346,6 @@ pub(super) fn rounded_primary(theme: &Theme, status: button::Status) -> button::
         look.accent,
         look.accent_hover,
         look.accent_text,
-        look.accent_edge,
         look.accent,
         status,
     )
@@ -362,8 +356,7 @@ pub(super) fn rounded_danger(theme: &Theme, status: button::Status) -> button::S
     keycap(
         look.danger,
         look.danger,
-        danger_text(look),
-        look.ink,
+        theme::black_or_white(look.danger),
         look.danger,
         status,
     )
@@ -371,22 +364,7 @@ pub(super) fn rounded_danger(theme: &Theme, status: button::Status) -> button::S
 
 pub(super) fn rounded_subtle(theme: &Theme, status: button::Status) -> button::Style {
     let look = theme::tokens_of(theme);
-    keycap(
-        look.surface,
-        look.raised,
-        look.ink,
-        look.lip,
-        look.border,
-        status,
-    )
-}
-
-fn danger_text(look: theme::Tokens) -> Color {
-    if Color::BLACK.relative_contrast(look.danger) >= Color::WHITE.relative_contrast(look.danger) {
-        Color::BLACK
-    } else {
-        Color::WHITE
-    }
+    keycap(look.surface, look.raised, look.ink, look.border, status)
 }
 
 /// Flat, softly rounded actions; interaction is expressed through tone.
@@ -394,7 +372,6 @@ fn keycap(
     rest: Color,
     hover: Color,
     text: Color,
-    _lip: Color,
     edge: Color,
     status: button::Status,
 ) -> button::Style {
@@ -402,7 +379,6 @@ fn keycap(
         background: Some(key_fill(rest, hover, status).into()),
         text_color: text,
         border: hairline(edge),
-        shadow: Shadow::default(),
         ..button::Style::default()
     };
     dim_if_disabled(style, status)
@@ -494,7 +470,7 @@ mod tests {
             crate::theme::Appearance::Light,
             crate::theme::Appearance::Dark,
         ] {
-            let theme = crate::theme::iced(appearance);
+            let theme = crate::theme::custom(appearance, None);
             assert_eq!(super::panel(&theme).shadow, iced::Shadow::default());
             assert_eq!(
                 super::writing_surface(&theme).shadow,

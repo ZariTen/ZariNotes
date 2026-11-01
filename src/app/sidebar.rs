@@ -101,7 +101,7 @@ impl App {
             return column![].into();
         };
         row![
-            workspace_title(workspace, self.look()),
+            line(folder_name(workspace), 15.0, MEDIUM, self.look().ink),
             icon_button(
                 icons::open_folder(),
                 "Open folder",
@@ -449,10 +449,6 @@ fn name_placeholder(kind: CreateKind) -> &'static str {
     }
 }
 
-fn workspace_title(workspace: &Path, look: theme::Tokens) -> Element<'static, Message> {
-    line(folder_name(workspace), 15.0, MEDIUM, look.ink)
-}
-
 fn folder_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -473,13 +469,12 @@ fn note_count(filter: &str, tree: &Dir) -> String {
 }
 
 fn empty_tree_message(filter: &str, look: theme::Tokens) -> Element<'static, Message> {
-    let muted = look.muted;
     let message = if filter.trim().is_empty() {
         "No notes".into()
     } else {
         format!("No notes match \"{}\".", filter.trim())
     };
-    container(text(message).size(13).color(muted))
+    container(text(message).size(13).color(look.muted))
         .padding([8, 4])
         .into()
 }

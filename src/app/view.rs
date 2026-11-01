@@ -13,7 +13,7 @@ use super::style::{
 };
 use super::{App, Doc, MEDIUM, Message, Mode, SIDEBAR_WIDTH, SOURCE_EDITOR_ID};
 use crate::highlight;
-use crate::live::{self, Live};
+use crate::live;
 use crate::theme;
 
 impl App {
@@ -83,7 +83,8 @@ impl App {
         match &self.doc {
             Some(Doc::Live(live)) => {
                 let note_dir = self.note_dir();
-                live_editor(live, self.app_theme(), note_dir.as_deref())
+                live.view(&self.app_theme(), note_dir.as_deref())
+                    .map(Message::Live)
             }
             Some(Doc::Source(content)) => source_editor(content),
             None => self.empty_editor(),
@@ -120,7 +121,7 @@ impl App {
     }
 
     /// Notes that link here. The header stays, so the list can be folded away
-    /// without losing the count. Hidden until a note is open.
+    /// without losing the count. Hidden when nothing links to the open note.
     fn backlinks_strip(&self) -> Element<'_, Message> {
         let Some(current) = &self.current else {
             return column![].into();
@@ -130,7 +131,7 @@ impl App {
             return column![].into();
         }
         let header = self.backlinks_header(links.len());
-        if links.is_empty() || !self.backlinks_open {
+        if !self.backlinks_open {
             return header;
         }
         let rows = links.into_iter().map(|link| backlink_row(link));
@@ -147,16 +148,13 @@ impl App {
     }
 
     fn backlinks_header(&self, count: usize) -> Element<'_, Message> {
-        let look = self.look();
-        let open = self.backlinks_open && count > 0;
-        let color = if count == 0 { look.muted } else { look.ink };
         button(
             row![
-                crate::icons::chevron(open),
+                crate::icons::chevron(self.backlinks_open),
                 text(backlinks_label(count))
                     .size(12)
                     .font(super::LABEL)
-                    .color(color),
+                    .color(self.look().ink),
             ]
             .spacing(6)
             .align_y(iced::Center),
@@ -233,14 +231,6 @@ impl App {
     }
 }
 
-fn live_editor<'a>(
-    live: &'a Live,
-    theme: iced::Theme,
-    note_dir: Option<&std::path::Path>,
-) -> Element<'a, Message> {
-    live.view(&theme, note_dir).map(Message::Live)
-}
-
 fn source_editor(content: &Content) -> Element<'_, Message> {
     text_editor(content)
         .id(SOURCE_EDITOR_ID)
@@ -261,7 +251,6 @@ fn source_editor(content: &Content) -> Element<'_, Message> {
 
 fn backlinks_label(n: usize) -> String {
     match n {
-        0 => "No notes link here".into(),
         1 => "1 backlink".into(),
         n => format!("{n} backlinks"),
     }

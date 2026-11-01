@@ -91,11 +91,15 @@ fn accent(theme: &Theme) -> Color {
 }
 
 fn file_color(selected: bool, theme: &Theme) -> Color {
-    let palette = theme.extended_palette();
     if selected {
-        return crate::theme::tokens_of(theme).link;
+        return accent(theme);
     }
-    palette.background.base.text.scale_alpha(0.8)
+    theme
+        .extended_palette()
+        .background
+        .base
+        .text
+        .scale_alpha(0.8)
 }
 
 /// Header action: pick a different workspace folder.

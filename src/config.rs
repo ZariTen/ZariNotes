@@ -86,28 +86,21 @@ fn parse_customization(text: &str) -> Customization {
         let Some((appearance, slot)) = key.trim().split_once('.') else {
             continue;
         };
-        let index = match appearance {
-            "light" => 0,
-            "dark" => 1,
-            _ => continue,
+        let Some(appearance) = Appearance::parse(appearance) else {
+            continue;
         };
-        let slot = match slot {
-            "accent" => ColorSlot::Accent,
-            "page" => ColorSlot::Page,
-            "sidebar" => ColorSlot::Sidebar,
-            "text" => ColorSlot::Text,
-            _ => continue,
+        let Some(slot) = ColorSlot::ALL.into_iter().find(|s| slot_key(*s) == slot) else {
+            continue;
         };
+        let index = appearance as usize;
         let parsed = parse_hex(value.trim());
         // A malformed or duplicate known field invalidates only its appearance.
         invalid[index] |= parsed.is_none() || values[index][slot.index()].is_some();
         values[index][slot.index()] = parsed;
     }
     let mut customization = Customization::default();
-    for (index, appearance) in [Appearance::Light, Appearance::Dark]
-        .into_iter()
-        .enumerate()
-    {
+    for appearance in [Appearance::Light, Appearance::Dark] {
+        let index = appearance as usize;
         if invalid[index] {
             continue;
         }
@@ -124,6 +117,11 @@ fn parse_customization(text: &str) -> Customization {
     customization
 }
 
+/// The `<appearance>.<slot>` key suffix, e.g. `accent`.
+fn slot_key(slot: ColorSlot) -> String {
+    slot.label().to_ascii_lowercase()
+}
+
 fn serialize_customization(customization: &Customization) -> std::io::Result<String> {
     use std::fmt::Write;
     let mut text = String::new();
@@ -138,7 +136,7 @@ fn serialize_customization(customization: &Customization) -> std::io::Result<Str
                     text,
                     "{}.{}={}",
                     appearance.as_str(),
-                    slot.label().to_ascii_lowercase(),
+                    slot_key(slot),
                     hex(slot.get(colors))
                 );
             }

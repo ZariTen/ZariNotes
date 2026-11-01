@@ -231,10 +231,10 @@ impl App {
     }
 
     fn app_theme(&self) -> iced::Theme {
-        match self.customization.override_for(self.appearance) {
-            Some(colors) => theme::custom(self.appearance, Some(colors)),
-            None => theme::iced(self.appearance),
-        }
+        theme::custom(
+            self.appearance,
+            self.customization.override_for(self.appearance),
+        )
     }
 
     fn title(&self) -> String {

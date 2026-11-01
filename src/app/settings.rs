@@ -67,11 +67,7 @@ impl App {
                 self.settings.open = false;
             }
             Msg::TogglePicker(slot) => {
-                self.settings.picker = if self.settings.picker == Some(slot) {
-                    None
-                } else {
-                    Some(slot)
-                };
+                self.settings.picker = (self.settings.picker != Some(slot)).then_some(slot);
             }
             Msg::ColorInput(slot, value) => {
                 let parsed = theme::parse_hex(&value);
@@ -96,7 +92,7 @@ impl App {
 
     fn apply_color(&mut self, slot: ColorSlot, color: Color) {
         let mut colors = self.customization.colors(self.appearance);
-        slot.set(&mut colors, color);
+        *slot.get_mut(&mut colors) = color;
         self.customization.set(self.appearance, colors);
         self.persist_colors();
     }
@@ -201,9 +197,10 @@ impl App {
     fn color_control(&self, slot: ColorSlot) -> Element<'_, Message> {
         let colors = self.customization.colors(self.appearance);
         let selected = self.settings.picker == Some(slot);
-        let color = slot.get(colors);
-        let invalid = theme::parse_hex(&self.settings.hex[slot.index()]).is_none();
-        let field = text_input("#RRGGBB", &self.settings.hex[slot.index()])
+        let current = slot.get(colors);
+        let draft = &self.settings.hex[slot.index()];
+        let invalid = theme::parse_hex(draft).is_none();
+        let field = text_input("#RRGGBB", draft)
             .on_input(move |value| Message::Settings(Msg::ColorInput(slot, value)))
             .padding([8, 10])
             .size(13)
@@ -217,7 +214,11 @@ impl App {
             });
         let mut control = column![
             row![
-                swatch(color, selected, Message::Settings(Msg::TogglePicker(slot))),
+                swatch(
+                    current,
+                    selected,
+                    Message::Settings(Msg::TogglePicker(slot))
+                ),
                 text(slot.label()).size(13).width(Fill),
                 field,
             ]
@@ -226,15 +227,13 @@ impl App {
         ]
         .spacing(8);
         if selected {
-            let choices = palette(slot, self.appearance)
-                .into_iter()
-                .map(move |color| {
-                    swatch(
-                        color,
-                        color == slot.get(colors),
-                        Message::Settings(Msg::PickColor(slot, color)),
-                    )
-                });
+            let choices = palette(slot, self.appearance).map(|color| {
+                swatch(
+                    color,
+                    color == current,
+                    Message::Settings(Msg::PickColor(slot, color)),
+                )
+            });
             control = control.push(row(choices).spacing(8));
         }
         control.into()
@@ -262,7 +261,7 @@ fn swatch(color: Color, selected: bool, message: Message) -> Element<'static, Me
         .into()
 }
 
-fn palette(slot: ColorSlot, appearance: Appearance) -> Vec<Color> {
+fn palette(slot: ColorSlot, appearance: Appearance) -> [Color; 8] {
     let choices = match slot {
         ColorSlot::Accent => [
             0x245B53, 0x93B9A6, 0x5686C4, 0x9C7CC2, 0xC47587, 0xC38C50, 0x667786, 0x343A38,
@@ -277,10 +276,7 @@ fn palette(slot: ColorSlot, appearance: Appearance) -> Vec<Color> {
             0x151515, 0x242D2A, 0x3B414B, 0x564A47, 0xE9EDE5, 0xFAF8F2, 0xD7DFED, 0xFFFFFF,
         ],
     };
-    choices
-        .into_iter()
-        .map(|hex| Color::from_rgb8((hex >> 16) as u8, (hex >> 8) as u8, hex as u8))
-        .collect()
+    choices.map(theme::rgb)
 }
 
 #[cfg(test)]

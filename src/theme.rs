@@ -86,29 +86,19 @@ impl ColorSlot {
     }
 
     pub fn index(self) -> usize {
-        match self {
-            Self::Accent => 0,
-            Self::Page => 1,
-            Self::Sidebar => 2,
-            Self::Text => 3,
-        }
+        self as usize
     }
 
-    pub fn get(self, colors: Colors) -> Color {
-        match self {
-            Self::Accent => colors.accent,
-            Self::Page => colors.page,
-            Self::Sidebar => colors.sidebar,
-            Self::Text => colors.text,
-        }
+    pub fn get(self, mut colors: Colors) -> Color {
+        *self.get_mut(&mut colors)
     }
 
-    pub fn set(self, colors: &mut Colors, value: Color) {
+    pub fn get_mut(self, colors: &mut Colors) -> &mut Color {
         match self {
-            Self::Accent => colors.accent = value,
-            Self::Page => colors.page = value,
-            Self::Sidebar => colors.sidebar = value,
-            Self::Text => colors.text = value,
+            Self::Accent => &mut colors.accent,
+            Self::Page => &mut colors.page,
+            Self::Sidebar => &mut colors.sidebar,
+            Self::Text => &mut colors.text,
         }
     }
 }
@@ -132,24 +122,22 @@ impl Customization {
         })
     }
 
-    pub fn override_for(self, appearance: Appearance) -> Option<Colors> {
-        match appearance {
-            Appearance::Light => self.light,
-            Appearance::Dark => self.dark,
-        }
+    pub fn override_for(mut self, appearance: Appearance) -> Option<Colors> {
+        *self.slot(appearance)
     }
 
     pub fn set(&mut self, appearance: Appearance, colors: Colors) {
-        match appearance {
-            Appearance::Light => self.light = Some(colors),
-            Appearance::Dark => self.dark = Some(colors),
-        }
+        *self.slot(appearance) = Some(colors);
     }
 
     pub fn reset(&mut self, appearance: Appearance) {
+        *self.slot(appearance) = None;
+    }
+
+    fn slot(&mut self, appearance: Appearance) -> &mut Option<Colors> {
         match appearance {
-            Appearance::Light => self.light = None,
-            Appearance::Dark => self.dark = None,
+            Appearance::Light => &mut self.light,
+            Appearance::Dark => &mut self.dark,
         }
     }
 }
@@ -179,12 +167,10 @@ pub struct Tokens {
     pub accent: Color,
     pub accent_hover: Color,
     pub accent_text: Color,
-    pub accent_edge: Color,
     pub ink: Color,
     pub muted: Color,
     pub border: Color,
     pub border_strong: Color,
-    pub lip: Color,
     pub link: Color,
     pub selection: Color,
     pub success: Color,
@@ -194,7 +180,7 @@ pub struct Tokens {
     pub dark: bool,
 }
 
-const fn rgb(hex: u32) -> Color {
+pub(crate) const fn rgb(hex: u32) -> Color {
     Color::from_rgb8((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
@@ -208,13 +194,14 @@ pub fn tokens(appearance: Appearance) -> Tokens {
 /// Resolve custom colors from the actual palette, without process-global state.
 /// Reconstructing with the already-corrected foreground is intentionally stable.
 pub fn tokens_of(theme: &Theme) -> Tokens {
-    let appearance =
-        if theme.name() == Appearance::Dark.title() || theme.name().starts_with("Custom Ink ") {
-            Appearance::Dark
-        } else {
-            Appearance::Light
-        };
-    if theme.name().starts_with("Custom Paper ") || theme.name().starts_with("Custom Ink ") {
+    let name = theme.name();
+    let custom_dark = name.starts_with("Custom Ink ");
+    let appearance = if custom_dark || name == Appearance::Dark.title() {
+        Appearance::Dark
+    } else {
+        Appearance::Light
+    };
+    if custom_dark || name.starts_with("Custom Paper ") {
         let p = theme.extended_palette();
         return tokens_with(
             appearance,
@@ -229,14 +216,11 @@ pub fn tokens_of(theme: &Theme) -> Tokens {
     tokens(appearance)
 }
 
-pub fn iced(appearance: Appearance) -> Theme {
-    custom(appearance, None)
-}
-
 pub fn custom(appearance: Appearance, colors: Option<Colors>) -> Theme {
+    let colors = colors.filter(|c| c.validate().is_ok());
     let look = tokens_with(appearance, colors);
     // Names also change with the palette: iced uses them for widget caches.
-    let name = if let Some(colors) = colors.filter(|c| c.validate().is_ok()) {
+    let name = if let Some(colors) = colors {
         format!(
             "Custom {} {} {} {} {}",
             appearance.title(),
@@ -249,7 +233,7 @@ pub fn custom(appearance: Appearance, colors: Option<Colors>) -> Theme {
         appearance.title().to_owned()
     };
     Theme::custom_with_fn(name, base_palette(look), move |_| {
-        if colors.is_some_and(|c| c.validate().is_ok()) {
+        if colors.is_some() {
             custom_extended(look)
         } else {
             extended(look)
@@ -296,6 +280,15 @@ fn luminance_ranges(surfaces: &[Color]) -> Vec<(f32, f32)> {
             .collect();
     }
     ranges
+}
+
+/// Whichever of black or white reads better on `fill`.
+pub fn black_or_white(fill: Color) -> Color {
+    if Color::BLACK.relative_contrast(fill) >= Color::WHITE.relative_contrast(fill) {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    }
 }
 
 fn readable(color: Color, surfaces: &[Color]) -> bool {
@@ -357,13 +350,7 @@ fn custom_tokens(appearance: Appearance, colors: Colors) -> Tokens {
     }
     let surfaces = [page, panel, canvas, raised];
     let ink = foreground(colors.text, &surfaces);
-    let accent_text = if Color::BLACK.relative_contrast(colors.accent)
-        >= Color::WHITE.relative_contrast(colors.accent)
-    {
-        Color::BLACK
-    } else {
-        Color::WHITE
-    };
+    let accent_text = black_or_white(colors.accent);
     let accent_end = if accent_text == Color::BLACK {
         Color::WHITE
     } else {
@@ -386,12 +373,10 @@ fn custom_tokens(appearance: Appearance, colors: Colors) -> Tokens {
         accent: colors.accent,
         accent_hover: mix(colors.accent, accent_end, 0.12),
         accent_text,
-        accent_edge: mix(colors.accent, accent_end, 0.28),
         ink,
         muted: foreground(mix(ink, page, 0.30), &surfaces),
         border: mix(page, ink, 0.16),
         border_strong: mix(page, ink, 0.34),
-        lip: mix(panel, ink, 0.22),
         link: foreground(colors.accent, &surfaces),
         selection,
         success: foreground(base.success, &surfaces),
@@ -406,10 +391,15 @@ fn custom_tokens(appearance: Appearance, colors: Colors) -> Tokens {
 /// of reusing the page foreground. Keep the legacy palette mapping unchanged.
 fn custom_extended(look: Tokens) -> Extended {
     let mut p = extended(look);
-    fn correct(pair: &mut Pair) {
+    for pair in pairs_mut(&mut p) {
         pair.text = foreground(pair.text, &[pair.color]);
     }
-    for pair in [
+    p
+}
+
+/// Every text-on-fill pair in an extended palette.
+fn pairs_mut(p: &mut Extended) -> [&mut Pair; 23] {
+    [
         &mut p.background.base,
         &mut p.background.weakest,
         &mut p.background.weaker,
@@ -433,10 +423,7 @@ fn custom_extended(look: Tokens) -> Extended {
         &mut p.danger.base,
         &mut p.danger.weak,
         &mut p.danger.strong,
-    ] {
-        correct(pair);
-    }
-    p
+    ]
 }
 
 const PAPER: Tokens = Tokens {
@@ -448,12 +435,10 @@ const PAPER: Tokens = Tokens {
     accent: rgb(0x245B53),
     accent_hover: rgb(0x1B4943),
     accent_text: rgb(0xFCFBF6),
-    accent_edge: rgb(0x163F39),
     ink: rgb(0x242D2A),
     muted: rgb(0x59645E),
     border: rgb(0xDCE1D8),
     border_strong: rgb(0xB7C3B8),
-    lip: rgb(0xD1D8CE),
     link: rgb(0x285F56),
     selection: rgb(0xC9DCCF),
     success: rgb(0x356342),
@@ -472,12 +457,10 @@ const INK: Tokens = Tokens {
     accent: rgb(0x93B9A6),
     accent_hover: rgb(0xADCBBB),
     accent_text: rgb(0x18241E),
-    accent_edge: rgb(0x618D78),
     ink: rgb(0xE9EDE5),
     muted: rgb(0xADB8AE),
     border: rgb(0x303B35),
     border_strong: rgb(0x4F6156),
-    lip: rgb(0x101613),
     link: rgb(0xA0C9B4),
     selection: rgb(0x384F43),
     success: rgb(0xAAC696),
@@ -673,32 +656,8 @@ mod tests {
             t,
             "custom widget token resolution must be exact"
         );
-        let p = theme.extended_palette();
-        for pair in [
-            p.background.base,
-            p.background.weakest,
-            p.background.weaker,
-            p.background.weak,
-            p.background.neutral,
-            p.background.strong,
-            p.background.stronger,
-            p.background.strongest,
-            p.primary.base,
-            p.primary.weak,
-            p.primary.strong,
-            p.secondary.base,
-            p.secondary.weak,
-            p.secondary.strong,
-            p.success.base,
-            p.success.weak,
-            p.success.strong,
-            p.warning.base,
-            p.warning.weak,
-            p.warning.strong,
-            p.danger.base,
-            p.danger.weak,
-            p.danger.strong,
-        ] {
+        let mut p = *theme.extended_palette();
+        for pair in pairs_mut(&mut p) {
             assert!(pair.text.relative_contrast(pair.color) >= 4.5);
         }
     }
@@ -762,7 +721,7 @@ mod tests {
     #[test]
     fn themes_keep_editorial_colors_and_readable_text() {
         for appearance in [Appearance::Light, Appearance::Dark] {
-            let theme = iced(appearance);
+            let theme = custom(appearance, None);
             let t = tokens_of(&theme);
             assert_eq!(theme.name(), appearance.title());
             assert_eq!(t, tokens(appearance));
