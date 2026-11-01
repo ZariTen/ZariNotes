@@ -4,17 +4,19 @@ use std::path::{Path, PathBuf};
 
 use crate::theme::{Appearance, ColorSlot, Colors, Customization, hex, parse_hex};
 
-fn config_dir() -> Option<PathBuf> {
-    Some(config_base()?.join("zarinotes"))
-}
+const LAST_WORKSPACE_FILE: &str = "last_workspace";
+const APPEARANCE_FILE: &str = "theme";
+const BACKLINKS_FILE: &str = "backlinks";
+const COLORS_FILE: &str = "colors";
 
-/// `$XDG_CONFIG_HOME`, or `~/.config` when that variable is unset.
-fn config_base() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Some(PathBuf::from(xdg));
-    }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".config"))
+/// `$XDG_CONFIG_HOME/zarinotes`, or `~/.config/zarinotes` when that variable
+/// is unset.
+fn config_dir() -> Option<PathBuf> {
+    let base = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(xdg) => PathBuf::from(xdg),
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
+    };
+    Some(base.join("zarinotes"))
 }
 
 fn read_config(name: &str) -> Option<String> {
@@ -22,50 +24,8 @@ fn read_config(name: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-fn write_config(name: &str, bytes: &[u8]) {
-    let Some(dir) = config_dir() else {
-        return;
-    };
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::write(dir.join(name), bytes);
-}
-
-pub(crate) fn load_last_workspace() -> Option<PathBuf> {
-    let text = read_config("last_workspace")?;
-    Some(PathBuf::from(text.trim()))
-}
-
-pub(crate) fn save_last_workspace(dir: &Path) {
-    write_config("last_workspace", dir.to_string_lossy().as_bytes());
-}
-
-pub(crate) fn load_appearance() -> Appearance {
-    let Some(text) = read_config("theme") else {
-        return Appearance::Dark;
-    };
-    Appearance::parse(text.trim()).unwrap_or(Appearance::Dark)
-}
-
-pub(crate) fn save_appearance(appearance: Appearance) {
-    write_config("theme", appearance.as_str().as_bytes());
-}
-
-/// Whether the backlink list under the editor starts open. Missing means open.
-pub(crate) fn load_backlinks_open() -> bool {
-    read_config("backlinks").is_none_or(|text| text.trim() != "closed")
-}
-
-pub(crate) fn save_backlinks_open(open: bool) {
-    write_config("backlinks", if open { b"open" } else { b"closed" });
-}
-
-/// Overrides live separately from `theme`, preserving the selected appearance.
-pub(crate) fn load_customization() -> Customization {
-    read_config("colors").map_or_else(Customization::default, |text| parse_customization(&text))
-}
-
-pub(crate) fn save_customization(customization: &Customization) -> std::io::Result<()> {
-    let text = serialize_customization(customization)?;
+/// Callers other than colors ignore failures: those files are conveniences.
+fn write_config(name: &str, bytes: &[u8]) -> std::io::Result<()> {
     let dir = config_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -73,38 +33,73 @@ pub(crate) fn save_customization(customization: &Customization) -> std::io::Resu
         )
     })?;
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("colors"), text)
+    std::fs::write(dir.join(name), bytes)
 }
 
+pub(crate) fn load_last_workspace() -> Option<PathBuf> {
+    let text = read_config(LAST_WORKSPACE_FILE)?;
+    Some(PathBuf::from(text.trim()))
+}
+
+pub(crate) fn save_last_workspace(dir: &Path) {
+    let _ = write_config(LAST_WORKSPACE_FILE, dir.to_string_lossy().as_bytes());
+}
+
+pub(crate) fn load_appearance() -> Appearance {
+    read_config(APPEARANCE_FILE)
+        .and_then(|text| Appearance::parse(text.trim()))
+        .unwrap_or(Appearance::Dark)
+}
+
+pub(crate) fn save_appearance(appearance: Appearance) {
+    let _ = write_config(APPEARANCE_FILE, appearance.as_str().as_bytes());
+}
+
+/// Whether the backlink list under the editor starts open. Missing means open.
+pub(crate) fn load_backlinks_open() -> bool {
+    read_config(BACKLINKS_FILE).is_none_or(|text| text.trim() != "closed")
+}
+
+pub(crate) fn save_backlinks_open(open: bool) {
+    let _ = write_config(BACKLINKS_FILE, if open { b"open" } else { b"closed" });
+}
+
+/// Overrides live separately from the appearance file, so resetting colors
+/// keeps the chosen appearance.
+pub(crate) fn load_customization() -> Customization {
+    read_config(COLORS_FILE).map_or_else(Customization::default, |text| parse_customization(&text))
+}
+
+pub(crate) fn save_customization(customization: &Customization) -> std::io::Result<()> {
+    write_config(
+        COLORS_FILE,
+        serialize_customization(customization)?.as_bytes(),
+    )
+}
+
+/// Lines of `<appearance>.<slot>=#RRGGBB`. Unknown lines are skipped; an
+/// appearance is used only when all four of its slots are present and valid.
 fn parse_customization(text: &str) -> Customization {
-    let mut values = [[None; 4]; 2];
-    let mut invalid = [false; 2];
+    // Indexed by appearance, then slot.
+    let mut fields = [[None; 4]; 2];
+    let mut rejected = [false; 2];
     for line in text.lines() {
-        let Some((key, value)) = line.split_once('=') else {
+        let Some((appearance, slot, value)) = parse_field(line) else {
             continue;
         };
-        let Some((appearance, slot)) = key.trim().split_once('.') else {
-            continue;
-        };
-        let Some(appearance) = Appearance::parse(appearance) else {
-            continue;
-        };
-        let Some(slot) = ColorSlot::ALL.into_iter().find(|s| slot_key(*s) == slot) else {
-            continue;
-        };
-        let index = appearance as usize;
+        let a = appearance as usize;
         let parsed = parse_hex(value.trim());
         // A malformed or duplicate known field invalidates only its appearance.
-        invalid[index] |= parsed.is_none() || values[index][slot.index()].is_some();
-        values[index][slot.index()] = parsed;
+        rejected[a] |= parsed.is_none() || fields[a][slot.index()].is_some();
+        fields[a][slot.index()] = parsed;
     }
     let mut customization = Customization::default();
     for appearance in [Appearance::Light, Appearance::Dark] {
-        let index = appearance as usize;
-        if invalid[index] {
+        let a = appearance as usize;
+        if rejected[a] {
             continue;
         }
-        if let [Some(accent), Some(page), Some(sidebar), Some(text)] = values[index] {
+        if let [Some(accent), Some(page), Some(sidebar), Some(text)] = fields[a] {
             let colors = Colors {
                 accent,
                 page,
@@ -117,7 +112,16 @@ fn parse_customization(text: &str) -> Customization {
     customization
 }
 
-/// The `<appearance>.<slot>` key suffix, e.g. `accent`.
+/// The known appearance and slot of a `key=value` line, with its raw value.
+fn parse_field(line: &str) -> Option<(Appearance, ColorSlot, &str)> {
+    let (key, value) = line.split_once('=')?;
+    let (appearance, slot) = key.trim().split_once('.')?;
+    let appearance = Appearance::parse(appearance)?;
+    let slot = ColorSlot::ALL.into_iter().find(|s| slot_key(*s) == slot)?;
+    Some((appearance, slot, value))
+}
+
+/// The slot part of a key, e.g. `accent` in `dark.accent`.
 fn slot_key(slot: ColorSlot) -> String {
     slot.label().to_ascii_lowercase()
 }

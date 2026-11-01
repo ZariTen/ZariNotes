@@ -229,12 +229,13 @@ pub(super) fn tree_button<'a>(
     button(body)
         .width(Fill)
         .padding(pad)
-        .style(tree_row_style(selected))
+        .style(move |theme, status| flat_row(theme, status, selected))
         .on_press(message)
         .into()
 }
 
-pub(super) fn chassis(theme: &Theme) -> container::Style {
+/// The window background behind the sidebar and page.
+pub(super) fn canvas(theme: &Theme) -> container::Style {
     let look = theme::tokens_of(theme);
     container::Style {
         background: Some(look.canvas.into()),
@@ -342,7 +343,7 @@ fn field_border(look: theme::Tokens, status: text_input::Status) -> Color {
 
 pub(super) fn rounded_primary(theme: &Theme, status: button::Status) -> button::Style {
     let look = theme::tokens_of(theme);
-    keycap(
+    solid_button(
         look.accent,
         look.accent_hover,
         look.accent_text,
@@ -353,7 +354,7 @@ pub(super) fn rounded_primary(theme: &Theme, status: button::Status) -> button::
 
 pub(super) fn rounded_danger(theme: &Theme, status: button::Status) -> button::Style {
     let look = theme::tokens_of(theme);
-    keycap(
+    solid_button(
         look.danger,
         look.danger,
         theme::black_or_white(look.danger),
@@ -364,40 +365,32 @@ pub(super) fn rounded_danger(theme: &Theme, status: button::Status) -> button::S
 
 pub(super) fn rounded_subtle(theme: &Theme, status: button::Status) -> button::Style {
     let look = theme::tokens_of(theme);
-    keycap(look.surface, look.raised, look.ink, look.border, status)
+    solid_button(look.surface, look.raised, look.ink, look.border, status)
 }
 
 /// Flat, softly rounded actions; interaction is expressed through tone.
-fn keycap(
-    rest: Color,
-    hover: Color,
+fn solid_button(
+    fill: Color,
+    hover_fill: Color,
     text: Color,
-    edge: Color,
+    border: Color,
     status: button::Status,
 ) -> button::Style {
-    let style = button::Style {
-        background: Some(key_fill(rest, hover, status).into()),
+    let fill = if status == button::Status::Hovered {
+        hover_fill
+    } else {
+        fill
+    };
+    let mut style = button::Style {
+        background: Some(fill.into()),
         text_color: text,
-        border: hairline(edge),
+        border: hairline(border),
         ..button::Style::default()
     };
-    dim_if_disabled(style, status)
-}
-
-fn key_fill(rest: Color, hover: Color, status: button::Status) -> Color {
-    if status == button::Status::Hovered {
-        hover
-    } else {
-        rest
+    if status == button::Status::Disabled {
+        style.text_color = style.text_color.scale_alpha(0.45);
+        style.background = style.background.map(|bg| bg.scale_alpha(0.5));
     }
-}
-
-fn dim_if_disabled(mut style: button::Style, status: button::Status) -> button::Style {
-    if status != button::Status::Disabled {
-        return style;
-    }
-    style.text_color = style.text_color.scale_alpha(0.45);
-    style.background = style.background.map(|bg| bg.scale_alpha(0.5));
     style
 }
 
@@ -421,10 +414,6 @@ fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
         button::Status::Active => {}
     }
     style
-}
-
-fn tree_row_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |theme, status| flat_row(theme, status, selected)
 }
 
 fn flat_row(theme: &Theme, status: button::Status, selected: bool) -> button::Style {

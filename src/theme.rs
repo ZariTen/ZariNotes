@@ -8,6 +8,16 @@ use iced::theme::Base;
 use iced::theme::palette::{self, Extended, Pair};
 use iced::{Color, Theme};
 
+/// WCAG AA minimum contrast for body text.
+const AA_CONTRAST: f32 = 4.5;
+
+/// [`AA_CONTRAST`] plus a margin, so f32 roundoff cannot leave a corrected
+/// color just below AA.
+const AA_CONTRAST_WITH_MARGIN: f32 = 4.5001;
+
+/// Start of every [`custom`] theme name: `Custom <title> <hex colors>`.
+const CUSTOM_NAME_PREFIX: &str = "Custom ";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Appearance {
     Light,
@@ -48,20 +58,19 @@ pub struct Colors {
 }
 
 impl Colors {
-    /// Validate opaque RGB input. Incompatible surface lightness and unreadable
-    /// text are adjusted automatically by `tokens_with`, not rejected.
+    /// Accept only opaque RGB values. Clashing surfaces and unreadable text are
+    /// adjusted later by [`tokens_with`], not rejected here.
     pub fn validate(self) -> Result<(), &'static str> {
-        for slot in ColorSlot::ALL {
-            let c = slot.get(self);
-            if ![c.r, c.g, c.b]
-                .into_iter()
-                .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
-                || c.a != 1.0
-            {
-                return Err("Colors must be opaque RGB values.");
-            }
+        let opaque_rgb =
+            |c: Color| c.a == 1.0 && [c.r, c.g, c.b].iter().all(|v| (0.0..=1.0).contains(v));
+        if ColorSlot::ALL
+            .into_iter()
+            .all(|slot| opaque_rgb(slot.get(self)))
+        {
+            Ok(())
+        } else {
+            Err("Colors must be opaque RGB values.")
         }
-        Ok(())
     }
 }
 
@@ -85,6 +94,7 @@ impl ColorSlot {
         }
     }
 
+    /// Position in [`Self::ALL`].
     pub fn index(self) -> usize {
         self as usize
     }
@@ -103,6 +113,7 @@ impl ColorSlot {
     }
 }
 
+/// The user's color overrides, one optional set per appearance.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Customization {
     pub light: Option<Colors>,
@@ -110,31 +121,32 @@ pub struct Customization {
 }
 
 impl Customization {
+    /// The override for `appearance`, or the built-in theme's colors.
     pub fn colors(self, appearance: Appearance) -> Colors {
         self.override_for(appearance).unwrap_or_else(|| {
-            let t = tokens(appearance);
+            let defaults = tokens(appearance);
             Colors {
-                accent: t.accent,
-                page: t.surface,
-                sidebar: t.panel,
-                text: t.ink,
+                accent: defaults.accent,
+                page: defaults.surface,
+                sidebar: defaults.panel,
+                text: defaults.ink,
             }
         })
     }
 
     pub fn override_for(mut self, appearance: Appearance) -> Option<Colors> {
-        *self.slot(appearance)
+        *self.override_mut(appearance)
     }
 
     pub fn set(&mut self, appearance: Appearance, colors: Colors) {
-        *self.slot(appearance) = Some(colors);
+        *self.override_mut(appearance) = Some(colors);
     }
 
     pub fn reset(&mut self, appearance: Appearance) {
-        *self.slot(appearance) = None;
+        *self.override_mut(appearance) = None;
     }
 
-    fn slot(&mut self, appearance: Appearance) -> &mut Option<Colors> {
+    fn override_mut(&mut self, appearance: Appearance) -> &mut Option<Colors> {
         match appearance {
             Appearance::Light => &mut self.light,
             Appearance::Dark => &mut self.dark,
@@ -142,32 +154,25 @@ impl Customization {
     }
 }
 
-/// Exactly six ASCII hexadecimal digits, with an optional leading `#`.
-pub fn parse_hex(value: &str) -> Option<Color> {
-    let digits = value.strip_prefix('#').unwrap_or(value);
-    if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    u32::from_str_radix(digits, 16).ok().map(rgb)
-}
-
-pub fn hex(color: Color) -> String {
-    let [r, g, b, _] = color.into_rgba8();
-    format!("#{r:02X}{g:02X}{b:02X}")
-}
-
 /// Shared surface, typography, interaction, and semantic color tokens.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tokens {
+    /// Window background around the sidebar and page.
     pub canvas: Color,
+    /// The writing page.
     pub surface: Color,
+    /// The sidebar.
     pub panel: Color,
+    /// Menus, tooltips, and hovered rows.
     pub raised: Color,
+    /// Background of a segmented switch.
     pub track: Color,
     pub accent: Color,
     pub accent_hover: Color,
     pub accent_text: Color,
+    /// Body text.
     pub ink: Color,
+    /// Secondary text.
     pub muted: Color,
     pub border: Color,
     pub border_strong: Color,
@@ -178,252 +183,6 @@ pub struct Tokens {
     pub danger: Color,
     pub focus: Color,
     pub dark: bool,
-}
-
-pub(crate) const fn rgb(hex: u32) -> Color {
-    Color::from_rgb8((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
-}
-
-pub fn tokens(appearance: Appearance) -> Tokens {
-    match appearance {
-        Appearance::Light => PAPER,
-        Appearance::Dark => INK,
-    }
-}
-
-/// Resolve custom colors from the actual palette, without process-global state.
-/// Reconstructing with the already-corrected foreground is intentionally stable.
-pub fn tokens_of(theme: &Theme) -> Tokens {
-    let name = theme.name();
-    let custom_dark = name.starts_with("Custom Ink ");
-    let appearance = if custom_dark || name == Appearance::Dark.title() {
-        Appearance::Dark
-    } else {
-        Appearance::Light
-    };
-    if custom_dark || name.starts_with("Custom Paper ") {
-        let p = theme.extended_palette();
-        return tokens_with(
-            appearance,
-            Some(Colors {
-                accent: p.primary.base.color,
-                page: p.background.base.color,
-                sidebar: p.background.weakest.color,
-                text: p.background.base.text,
-            }),
-        );
-    }
-    tokens(appearance)
-}
-
-pub fn custom(appearance: Appearance, colors: Option<Colors>) -> Theme {
-    let colors = colors.filter(|c| c.validate().is_ok());
-    let look = tokens_with(appearance, colors);
-    // Names also change with the palette: iced uses them for widget caches.
-    let name = if let Some(colors) = colors {
-        format!(
-            "Custom {} {} {} {} {}",
-            appearance.title(),
-            hex(colors.accent),
-            hex(colors.page),
-            hex(colors.sidebar),
-            hex(colors.text)
-        )
-    } else {
-        appearance.title().to_owned()
-    };
-    Theme::custom_with_fn(name, base_palette(look), move |_| {
-        if colors.is_some() {
-            custom_extended(look)
-        } else {
-            extended(look)
-        }
-    })
-}
-
-/// Preserve the built-in palettes exactly until an override is supplied.
-pub fn tokens_with(appearance: Appearance, colors: Option<Colors>) -> Tokens {
-    match colors.filter(|c| c.validate().is_ok()) {
-        Some(colors) => custom_tokens(appearance, colors),
-        None => tokens(appearance),
-    }
-}
-
-fn mix(a: Color, b: Color, amount: f32) -> Color {
-    Color::from_rgb(
-        a.r + (b.r - a.r) * amount,
-        a.g + (b.g - a.g) * amount,
-        a.b + (b.b - a.b) * amount,
-    )
-}
-
-// Intersect the allowed foreground-luminance intervals for every surface.
-// A tiny margin prevents f32 roundoff from dropping a corrected color below AA.
-fn luminance_ranges(surfaces: &[Color]) -> Vec<(f32, f32)> {
-    const RATIO: f32 = 4.5001;
-    let mut ranges = vec![(0.0_f32, 1.0_f32)];
-    for surface in surfaces {
-        let lum = surface.relative_luminance();
-        let allowed = [
-            (0.0, (lum + 0.05) / RATIO - 0.05),
-            (RATIO * (lum + 0.05) - 0.05, 1.0),
-        ];
-        ranges = ranges
-            .into_iter()
-            .flat_map(|(lo, hi)| {
-                allowed.into_iter().filter_map(move |(a, b)| {
-                    let lower = lo.max(a);
-                    let upper = hi.min(b);
-                    (lower <= upper).then_some((lower, upper))
-                })
-            })
-            .collect();
-    }
-    ranges
-}
-
-/// Whichever of black or white reads better on `fill`.
-pub fn black_or_white(fill: Color) -> Color {
-    if Color::BLACK.relative_contrast(fill) >= Color::WHITE.relative_contrast(fill) {
-        Color::BLACK
-    } else {
-        Color::WHITE
-    }
-}
-
-fn readable(color: Color, surfaces: &[Color]) -> bool {
-    surfaces.iter().all(|s| color.relative_contrast(*s) >= 4.5)
-}
-
-/// Move only as far toward black/white as needed, retaining the requested hue.
-fn foreground(color: Color, surfaces: &[Color]) -> Color {
-    if readable(color, surfaces) {
-        return color;
-    }
-    let lum = color.relative_luminance();
-    let target = luminance_ranges(surfaces)
-        .into_iter()
-        .map(|(lo, hi)| lum.clamp(lo, hi))
-        .min_by(|a, b| (a - lum).abs().total_cmp(&(b - lum).abs()))
-        .expect("custom surfaces always have a shared foreground");
-    let end = if target < lum {
-        Color::BLACK
-    } else {
-        Color::WHITE
-    };
-    let mut lo = 0.0;
-    let mut hi = 1.0;
-    for _ in 0..30 {
-        let mid = (lo + hi) / 2.0;
-        let candidate = mix(color, end, mid);
-        if (candidate.relative_luminance() < target) == (target < lum) {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
-    mix(color, end, (lo + hi) / 2.0)
-}
-
-fn custom_tokens(appearance: Appearance, colors: Colors) -> Tokens {
-    let base = tokens(appearance);
-    let page = colors.page;
-    let mut panel = colors.sidebar;
-    // Some mixed-lightness surfaces cannot share any AA foreground. Preserve
-    // the page and accent exactly, moving only the sidebar toward the page in
-    // 1% increments until compatible. Stored choices remain untouched.
-    if luminance_ranges(&[page, panel]).is_empty() {
-        for step in 1..=100 {
-            panel = mix(colors.sidebar, page, step as f32 / 100.0);
-            if !luminance_ranges(&[page, panel]).is_empty() {
-                break;
-            }
-        }
-    }
-    let mut canvas = mix(page, Color::BLACK, if base.dark { 0.16 } else { 0.035 });
-    let mut raised = mix(page, Color::WHITE, if base.dark { 0.045 } else { 0.35 });
-    // Very narrow feasible ranges (e.g. black beside white) leave no room for
-    // surface layering. Readability takes precedence over decorative elevation.
-    if luminance_ranges(&[page, panel, canvas, raised]).is_empty() {
-        canvas = page;
-        raised = page;
-    }
-    let surfaces = [page, panel, canvas, raised];
-    let ink = foreground(colors.text, &surfaces);
-    let accent_text = black_or_white(colors.accent);
-    let accent_end = if accent_text == Color::BLACK {
-        Color::WHITE
-    } else {
-        Color::BLACK
-    };
-    let mut selection = mix(page, colors.accent, 0.18);
-    if !readable(ink, &[selection]) {
-        selection = page;
-    }
-    let mut track = mix(panel, ink, 0.08);
-    if !readable(ink, &[track]) {
-        track = panel;
-    }
-    Tokens {
-        canvas,
-        surface: page,
-        panel,
-        raised,
-        track,
-        accent: colors.accent,
-        accent_hover: mix(colors.accent, accent_end, 0.12),
-        accent_text,
-        ink,
-        muted: foreground(mix(ink, page, 0.30), &surfaces),
-        border: mix(page, ink, 0.16),
-        border_strong: mix(page, ink, 0.34),
-        link: foreground(colors.accent, &surfaces),
-        selection,
-        success: foreground(base.success, &surfaces),
-        warning: foreground(base.warning, &surfaces),
-        danger: foreground(base.danger, &surfaces),
-        focus: foreground(colors.accent, &surfaces),
-        dark: base.dark,
-    }
-}
-
-/// Stock widgets can paint on semantic fills too; choose text per pair instead
-/// of reusing the page foreground. Keep the legacy palette mapping unchanged.
-fn custom_extended(look: Tokens) -> Extended {
-    let mut p = extended(look);
-    for pair in pairs_mut(&mut p) {
-        pair.text = foreground(pair.text, &[pair.color]);
-    }
-    p
-}
-
-/// Every text-on-fill pair in an extended palette.
-fn pairs_mut(p: &mut Extended) -> [&mut Pair; 23] {
-    [
-        &mut p.background.base,
-        &mut p.background.weakest,
-        &mut p.background.weaker,
-        &mut p.background.weak,
-        &mut p.background.neutral,
-        &mut p.background.strong,
-        &mut p.background.stronger,
-        &mut p.background.strongest,
-        &mut p.primary.base,
-        &mut p.primary.weak,
-        &mut p.primary.strong,
-        &mut p.secondary.base,
-        &mut p.secondary.weak,
-        &mut p.secondary.strong,
-        &mut p.success.base,
-        &mut p.success.weak,
-        &mut p.success.strong,
-        &mut p.warning.base,
-        &mut p.warning.weak,
-        &mut p.warning.strong,
-        &mut p.danger.base,
-        &mut p.danger.weak,
-        &mut p.danger.strong,
-    ]
 }
 
 const PAPER: Tokens = Tokens {
@@ -470,6 +229,140 @@ const INK: Tokens = Tokens {
     dark: true,
 };
 
+pub fn tokens(appearance: Appearance) -> Tokens {
+    match appearance {
+        Appearance::Light => PAPER,
+        Appearance::Dark => INK,
+    }
+}
+
+/// The built-in tokens for `appearance` until valid overrides are supplied.
+pub fn tokens_with(appearance: Appearance, colors: Option<Colors>) -> Tokens {
+    match colors.filter(|c| c.validate().is_ok()) {
+        Some(colors) => custom_tokens(appearance, colors),
+        None => tokens(appearance),
+    }
+}
+
+/// The tokens behind a theme made by [`custom`], read back from its name and
+/// palette so styles need no global state. Re-deriving from already-corrected
+/// colors gives the same tokens.
+pub fn tokens_of(theme: &Theme) -> Tokens {
+    let name = theme.name();
+    let appearance = if name == Appearance::Dark.title() || is_custom_name(name, Appearance::Dark) {
+        Appearance::Dark
+    } else {
+        Appearance::Light
+    };
+    if !is_custom_name(name, appearance) {
+        return tokens(appearance);
+    }
+    let palette = theme.extended_palette();
+    tokens_with(
+        appearance,
+        Some(Colors {
+            accent: palette.primary.base.color,
+            page: palette.background.base.color,
+            sidebar: palette.background.weakest.color,
+            text: palette.background.base.text,
+        }),
+    )
+}
+
+fn is_custom_name(name: &str, appearance: Appearance) -> bool {
+    name.strip_prefix(CUSTOM_NAME_PREFIX)
+        .and_then(|rest| rest.strip_prefix(appearance.title()))
+        .is_some_and(|rest| rest.starts_with(' '))
+}
+
+pub fn custom(appearance: Appearance, colors: Option<Colors>) -> Theme {
+    let colors = colors.filter(|c| c.validate().is_ok());
+    let look = tokens_with(appearance, colors);
+    // Names also change with the palette: iced uses them for widget caches.
+    let name = match colors {
+        Some(colors) => format!(
+            "{CUSTOM_NAME_PREFIX}{} {} {} {} {}",
+            appearance.title(),
+            hex(colors.accent),
+            hex(colors.page),
+            hex(colors.sidebar),
+            hex(colors.text)
+        ),
+        None => appearance.title().to_owned(),
+    };
+    Theme::custom_with_fn(name, base_palette(look), move |_| {
+        if colors.is_some() {
+            custom_extended(look)
+        } else {
+            extended(look)
+        }
+    })
+}
+
+fn custom_tokens(appearance: Appearance, colors: Colors) -> Tokens {
+    let base = tokens(appearance);
+    let page = colors.page;
+    let shares_foreground = |panel: Color| !luminance_ranges(&[page, panel]).is_empty();
+    // Some mixed-lightness surfaces cannot share any AA foreground. Preserve
+    // the page and accent exactly, moving only the sidebar toward the page in
+    // 1% increments until compatible. Stored choices remain untouched.
+    let mut panel = colors.sidebar;
+    if !shares_foreground(panel) {
+        for step in 1..=100 {
+            panel = mix(colors.sidebar, page, step as f32 / 100.0);
+            if shares_foreground(panel) {
+                break;
+            }
+        }
+    }
+    let mut canvas = mix(page, Color::BLACK, if base.dark { 0.16 } else { 0.035 });
+    let mut raised = mix(page, Color::WHITE, if base.dark { 0.045 } else { 0.35 });
+    // Very narrow feasible ranges (e.g. black beside white) leave no room for
+    // surface layering. Readability takes precedence over decorative elevation.
+    if luminance_ranges(&[page, panel, canvas, raised]).is_empty() {
+        canvas = page;
+        raised = page;
+    }
+    let surfaces = [page, panel, canvas, raised];
+    let ink = foreground(colors.text, &surfaces);
+    let accent_text = black_or_white(colors.accent);
+    // Hovering moves the accent away from its text color.
+    let hover_toward = if accent_text == Color::BLACK {
+        Color::WHITE
+    } else {
+        Color::BLACK
+    };
+    let mut selection = mix(page, colors.accent, 0.18);
+    if !readable(ink, &[selection]) {
+        selection = page;
+    }
+    let mut track = mix(panel, ink, 0.08);
+    if !readable(ink, &[track]) {
+        track = panel;
+    }
+    Tokens {
+        canvas,
+        surface: page,
+        panel,
+        raised,
+        track,
+        accent: colors.accent,
+        accent_hover: mix(colors.accent, hover_toward, 0.12),
+        accent_text,
+        ink,
+        muted: foreground(mix(ink, page, 0.30), &surfaces),
+        border: mix(page, ink, 0.16),
+        border_strong: mix(page, ink, 0.34),
+        link: foreground(colors.accent, &surfaces),
+        selection,
+        success: foreground(base.success, &surfaces),
+        warning: foreground(base.warning, &surfaces),
+        danger: foreground(base.danger, &surfaces),
+        focus: foreground(colors.accent, &surfaces),
+        dark: base.dark,
+    }
+}
+
 fn base_palette(look: Tokens) -> palette::Palette {
     palette::Palette {
         background: look.canvas,
@@ -479,10 +372,6 @@ fn base_palette(look: Tokens) -> palette::Palette {
         warning: look.warning,
         danger: look.danger,
     }
-}
-
-fn text_on(color: Color, text: Color) -> Pair {
-    Pair { color, text }
 }
 
 /// Map editorial surfaces onto iced's slots so stock widgets (rules,
@@ -499,6 +388,49 @@ fn extended(look: Tokens) -> Extended {
     }
 }
 
+/// [`extended`], with each pair's text made readable on its own fill: stock
+/// widgets also paint text on accent and semantic fills, not just the page.
+fn custom_extended(look: Tokens) -> Extended {
+    let mut slots = extended(look);
+    for pair in text_pairs_mut(&mut slots) {
+        pair.text = foreground(pair.text, &[pair.color]);
+    }
+    slots
+}
+
+/// Every text-on-fill pair in an extended palette.
+fn text_pairs_mut(slots: &mut Extended) -> [&mut Pair; 23] {
+    [
+        &mut slots.background.base,
+        &mut slots.background.weakest,
+        &mut slots.background.weaker,
+        &mut slots.background.weak,
+        &mut slots.background.neutral,
+        &mut slots.background.strong,
+        &mut slots.background.stronger,
+        &mut slots.background.strongest,
+        &mut slots.primary.base,
+        &mut slots.primary.weak,
+        &mut slots.primary.strong,
+        &mut slots.secondary.base,
+        &mut slots.secondary.weak,
+        &mut slots.secondary.strong,
+        &mut slots.success.base,
+        &mut slots.success.weak,
+        &mut slots.success.strong,
+        &mut slots.warning.base,
+        &mut slots.warning.weak,
+        &mut slots.warning.strong,
+        &mut slots.danger.base,
+        &mut slots.danger.weak,
+        &mut slots.danger.strong,
+    ]
+}
+
+fn text_on(color: Color, text: Color) -> Pair {
+    Pair { color, text }
+}
+
 fn background_slots(look: Tokens) -> palette::Background {
     let ink = look.ink;
     palette::Background {
@@ -509,15 +441,14 @@ fn background_slots(look: Tokens) -> palette::Background {
         neutral: text_on(look.canvas, ink),
         strong: text_on(look.border_strong, ink),
         stronger: text_on(look.border, ink),
-        strongest: text_on(strongest_surface(look), ink),
-    }
-}
-
-fn strongest_surface(look: Tokens) -> Color {
-    if look.dark {
-        look.muted
-    } else {
-        look.border_strong
+        strongest: text_on(
+            if look.dark {
+                look.muted
+            } else {
+                look.border_strong
+            },
+            ink,
+        ),
     }
 }
 
@@ -564,38 +495,136 @@ fn danger_slots(look: Tokens) -> palette::Danger {
     }
 }
 
+fn readable(color: Color, surfaces: &[Color]) -> bool {
+    surfaces
+        .iter()
+        .all(|s| color.relative_contrast(*s) >= AA_CONTRAST)
+}
+
+/// `color` moved only as far toward black or white as AA contrast on every
+/// surface needs, keeping its hue.
+fn foreground(color: Color, surfaces: &[Color]) -> Color {
+    const BISECTION_STEPS: usize = 30;
+    if readable(color, surfaces) {
+        return color;
+    }
+    let luminance = color.relative_luminance();
+    let target = luminance_ranges(surfaces)
+        .into_iter()
+        .map(|(lower, upper)| luminance.clamp(lower, upper))
+        .min_by(|a, b| (a - luminance).abs().total_cmp(&(b - luminance).abs()))
+        .expect("custom surfaces always have a shared foreground");
+    let darken = target < luminance;
+    let extreme = if darken { Color::BLACK } else { Color::WHITE };
+    // Bisect for the mix toward `extreme` whose luminance reaches `target`.
+    let mut low = 0.0;
+    let mut high = 1.0;
+    for _ in 0..BISECTION_STEPS {
+        let mid = (low + high) / 2.0;
+        if (mix(color, extreme, mid).relative_luminance() < target) == darken {
+            high = mid;
+        } else {
+            low = mid;
+        }
+    }
+    mix(color, extreme, (low + high) / 2.0)
+}
+
+/// The text luminance intervals that reach AA contrast on every surface;
+/// empty when no single text color is readable on all of them.
+fn luminance_ranges(surfaces: &[Color]) -> Vec<(f32, f32)> {
+    let mut ranges = vec![(0.0_f32, 1.0_f32)];
+    for surface in surfaces {
+        let luminance = surface.relative_luminance();
+        // Text must be darker or lighter than the surface by the AA ratio.
+        let allowed = [
+            (0.0, (luminance + 0.05) / AA_CONTRAST_WITH_MARGIN - 0.05),
+            (AA_CONTRAST_WITH_MARGIN * (luminance + 0.05) - 0.05, 1.0),
+        ];
+        ranges = ranges
+            .into_iter()
+            .flat_map(|(lower, upper)| {
+                allowed.into_iter().filter_map(move |(min, max)| {
+                    let lower = lower.max(min);
+                    let upper = upper.min(max);
+                    (lower <= upper).then_some((lower, upper))
+                })
+            })
+            .collect();
+    }
+    ranges
+}
+
+/// Whichever of black or white reads better on `fill`.
+pub fn black_or_white(fill: Color) -> Color {
+    if Color::BLACK.relative_contrast(fill) >= Color::WHITE.relative_contrast(fill) {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    }
+}
+
+/// `a` blended toward `b` by `amount` (0 keeps `a`, 1 gives `b`).
+fn mix(a: Color, b: Color, amount: f32) -> Color {
+    Color::from_rgb(
+        a.r + (b.r - a.r) * amount,
+        a.g + (b.g - a.g) * amount,
+        a.b + (b.b - a.b) * amount,
+    )
+}
+
+pub(crate) const fn rgb(hex: u32) -> Color {
+    Color::from_rgb8((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+}
+
+/// Exactly six ASCII hexadecimal digits, with an optional leading `#`.
+pub fn parse_hex(value: &str) -> Option<Color> {
+    let digits = value.strip_prefix('#').unwrap_or(value);
+    if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok().map(rgb)
+}
+
+pub fn hex(color: Color) -> String {
+    let [r, g, b, _] = color.into_rgba8();
+    format!("#{r:02X}{g:02X}{b:02X}")
+}
+
 /// Quiet rails keep navigation visible without competing with the page.
 pub fn scrollbar(
     theme: &Theme,
     status: iced::widget::scrollable::Status,
 ) -> iced::widget::scrollable::Style {
     use iced::widget::scrollable::{self, Status};
+    const IDLE_ALPHA: f32 = 0.28;
+    const HOVERED_ALPHA: f32 = 0.55;
+    const DRAGGED_ALPHA: f32 = 0.6;
     let look = tokens_of(theme);
     let mut style = scrollable::default(theme, status);
     let alpha = if matches!(status, Status::Dragged { .. }) {
-        0.6
+        DRAGGED_ALPHA
     } else {
-        0.28
+        IDLE_ALPHA
     };
     for rail in [&mut style.vertical_rail, &mut style.horizontal_rail] {
         rail.background = None;
         rail.scroller.background = look.muted.scale_alpha(alpha).into();
         rail.scroller.border = iced::border::rounded(8);
     }
-    match status {
+    let hovered_rail = match status {
         Status::Hovered {
             is_vertical_scrollbar_hovered: true,
             ..
-        } => {
-            style.vertical_rail.scroller.background = look.muted.scale_alpha(0.55).into();
-        }
+        } => Some(&mut style.vertical_rail),
         Status::Hovered {
             is_horizontal_scrollbar_hovered: true,
             ..
-        } => {
-            style.horizontal_rail.scroller.background = look.muted.scale_alpha(0.55).into();
-        }
-        _ => {}
+        } => Some(&mut style.horizontal_rail),
+        _ => None,
+    };
+    if let Some(rail) = hovered_rail {
+        rail.scroller.background = look.muted.scale_alpha(HOVERED_ALPHA).into();
     }
     style
 }
@@ -641,15 +670,15 @@ mod tests {
                 t.ink, t.muted, t.link, t.success, t.warning, t.danger, t.focus,
             ] {
                 assert!(
-                    text.relative_contrast(surface) >= 4.5,
+                    text.relative_contrast(surface) >= AA_CONTRAST,
                     "{appearance:?} {colors:?}: {text:?} on {surface:?} = {}",
                     text.relative_contrast(surface)
                 );
             }
         }
-        assert!(t.ink.relative_contrast(t.selection) >= 4.5);
-        assert!(t.accent_text.relative_contrast(t.accent) >= 4.5);
-        assert!(t.accent_text.relative_contrast(t.accent_hover) >= 4.5);
+        assert!(t.ink.relative_contrast(t.selection) >= AA_CONTRAST);
+        assert!(t.accent_text.relative_contrast(t.accent) >= AA_CONTRAST);
+        assert!(t.accent_text.relative_contrast(t.accent_hover) >= AA_CONTRAST);
         let theme = custom(appearance, Some(colors));
         assert_eq!(
             tokens_of(&theme),
@@ -657,8 +686,8 @@ mod tests {
             "custom widget token resolution must be exact"
         );
         let mut p = *theme.extended_palette();
-        for pair in pairs_mut(&mut p) {
-            assert!(pair.text.relative_contrast(pair.color) >= 4.5);
+        for pair in text_pairs_mut(&mut p) {
+            assert!(pair.text.relative_contrast(pair.color) >= AA_CONTRAST);
         }
     }
 
@@ -740,14 +769,14 @@ mod tests {
                     ("danger", t.danger),
                 ] {
                     assert!(
-                        text.relative_contrast(surface) >= 4.5,
+                        text.relative_contrast(surface) >= AA_CONTRAST,
                         "{appearance:?} {text_name}/{surface_name} must meet WCAG AA"
                     );
                 }
             }
             for (name, fill) in [("accent", t.accent), ("accent_hover", t.accent_hover)] {
                 assert!(
-                    t.accent_text.relative_contrast(fill) >= 4.5,
+                    t.accent_text.relative_contrast(fill) >= AA_CONTRAST,
                     "{appearance:?} accent_text/{name} must meet WCAG AA"
                 );
             }
@@ -762,7 +791,7 @@ mod tests {
                 );
             }
             assert!(
-                t.ink.relative_contrast(t.selection) >= 4.5,
+                t.ink.relative_contrast(t.selection) >= AA_CONTRAST,
                 "{appearance:?} ink/selection must meet WCAG AA"
             );
             assert_ne!(t.panel, t.raised);

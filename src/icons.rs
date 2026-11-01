@@ -92,14 +92,15 @@ fn accent(theme: &Theme) -> Color {
 
 fn file_color(selected: bool, theme: &Theme) -> Color {
     if selected {
-        return accent(theme);
+        accent(theme)
+    } else {
+        theme
+            .extended_palette()
+            .background
+            .base
+            .text
+            .scale_alpha(0.8)
     }
-    theme
-        .extended_palette()
-        .background
-        .base
-        .text
-        .scale_alpha(0.8)
 }
 
 /// Header action: pick a different workspace folder.

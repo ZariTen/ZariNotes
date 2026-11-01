@@ -22,34 +22,38 @@ pub(super) enum Msg {
 
 pub(super) struct State {
     pub open: bool,
-    picker: Option<ColorSlot>,
-    hex: [String; 4],
-    error: Option<String>,
+    /// The slot whose preset swatches are showing.
+    open_picker: Option<ColorSlot>,
+    /// What each hex field shows, in [`ColorSlot::ALL`] order. May be invalid
+    /// while the user is typing.
+    hex_drafts: [String; 4],
+    save_error: Option<String>,
 }
 
 impl State {
     pub fn new(colors: Colors) -> Self {
         Self {
             open: false,
-            picker: None,
-            hex: drafts(colors),
-            error: None,
+            open_picker: None,
+            hex_drafts: hex_drafts(colors),
+            save_error: None,
         }
     }
 
+    /// Show `colors` in the hex fields and close any picker.
     pub fn sync(&mut self, colors: Colors) {
-        self.hex = drafts(colors);
-        self.picker = None;
+        self.hex_drafts = hex_drafts(colors);
+        self.open_picker = None;
     }
 
-    fn invalid(&self) -> bool {
-        self.hex
+    fn has_invalid_draft(&self) -> bool {
+        self.hex_drafts
             .iter()
             .any(|value| theme::parse_hex(value).is_none())
     }
 }
 
-fn drafts(colors: Colors) -> [String; 4] {
+fn hex_drafts(colors: Colors) -> [String; 4] {
     std::array::from_fn(|i| theme::hex(ColorSlot::ALL[i].get(colors)))
 }
 
@@ -67,17 +71,18 @@ impl App {
                 self.settings.open = false;
             }
             Msg::TogglePicker(slot) => {
-                self.settings.picker = (self.settings.picker != Some(slot)).then_some(slot);
+                self.settings.open_picker =
+                    (self.settings.open_picker != Some(slot)).then_some(slot);
             }
             Msg::ColorInput(slot, value) => {
                 let parsed = theme::parse_hex(&value);
-                self.settings.hex[slot.index()] = value;
+                self.settings.hex_drafts[slot.index()] = value;
                 if let Some(color) = parsed {
                     self.apply_color(slot, color);
                 }
             }
             Msg::PickColor(slot, color) => {
-                self.settings.hex[slot.index()] = theme::hex(color);
+                self.settings.hex_drafts[slot.index()] = theme::hex(color);
                 self.apply_color(slot, color);
             }
             Msg::Reset => {
@@ -98,7 +103,7 @@ impl App {
     }
 
     fn persist_colors(&mut self) {
-        self.settings.error = crate::config::save_customization(&self.customization)
+        self.settings.save_error = crate::config::save_customization(&self.customization)
             .err()
             .map(|error| format!("Could not save settings: {error}"));
     }
@@ -168,21 +173,19 @@ impl App {
         for slot in ColorSlot::ALL {
             body = body.push(self.color_control(slot));
         }
-        if self.settings.invalid() {
+        if self.settings.has_invalid_draft() {
             body = body.push(text("Use #RRGGBB.").size(12).color(look.danger));
         }
-        let requested = self.customization.colors(self.appearance);
-        if requested.text != look.ink
-            || requested.page != look.surface
-            || requested.sidebar != look.panel
-        {
+        // The accent is always used as chosen; the rest may be corrected.
+        let chosen = self.customization.colors(self.appearance);
+        if chosen.text != look.ink || chosen.page != look.surface || chosen.sidebar != look.panel {
             body = body.push(
                 text("Colors adjusted for contrast.")
                     .size(11)
                     .color(look.muted),
             );
         }
-        if let Some(error) = &self.settings.error {
+        if let Some(error) = &self.settings.save_error {
             body = body.push(text(error).size(12).color(look.danger));
         }
         body.push(
@@ -196,9 +199,9 @@ impl App {
 
     fn color_control(&self, slot: ColorSlot) -> Element<'_, Message> {
         let colors = self.customization.colors(self.appearance);
-        let selected = self.settings.picker == Some(slot);
+        let picker_open = self.settings.open_picker == Some(slot);
         let current = slot.get(colors);
-        let draft = &self.settings.hex[slot.index()];
+        let draft = &self.settings.hex_drafts[slot.index()];
         let invalid = theme::parse_hex(draft).is_none();
         let field = text_input("#RRGGBB", draft)
             .on_input(move |value| Message::Settings(Msg::ColorInput(slot, value)))
@@ -216,7 +219,7 @@ impl App {
             row![
                 swatch(
                     current,
-                    selected,
+                    picker_open,
                     Message::Settings(Msg::TogglePicker(slot))
                 ),
                 text(slot.label()).size(13).width(Fill),
@@ -226,15 +229,15 @@ impl App {
             .align_y(iced::Center),
         ]
         .spacing(8);
-        if selected {
-            let choices = palette(slot, self.appearance).map(|color| {
+        if picker_open {
+            let presets = preset_colors(slot, self.appearance).map(|color| {
                 swatch(
                     color,
                     color == current,
                     Message::Settings(Msg::PickColor(slot, color)),
                 )
             });
-            control = control.push(row(choices).spacing(8));
+            control = control.push(row(presets).spacing(8));
         }
         control.into()
     }
@@ -261,8 +264,9 @@ fn swatch(color: Color, selected: bool, message: Message) -> Element<'static, Me
         .into()
 }
 
-fn palette(slot: ColorSlot, appearance: Appearance) -> [Color; 8] {
-    let choices = match slot {
+/// The swatches offered under a slot's picker.
+fn preset_colors(slot: ColorSlot, appearance: Appearance) -> [Color; 8] {
+    let presets = match slot {
         ColorSlot::Accent => [
             0x245B53, 0x93B9A6, 0x5686C4, 0x9C7CC2, 0xC47587, 0xC38C50, 0x667786, 0x343A38,
         ],
@@ -276,7 +280,7 @@ fn palette(slot: ColorSlot, appearance: Appearance) -> [Color; 8] {
             0x151515, 0x242D2A, 0x3B414B, 0x564A47, 0xE9EDE5, 0xFAF8F2, 0xD7DFED, 0xFFFFFF,
         ],
     };
-    choices.map(theme::rgb)
+    presets.map(theme::rgb)
 }
 
 #[cfg(test)]
@@ -309,7 +313,7 @@ mod tests {
         for value in ["#12", "#xx"] {
             let _ = app.update_settings(Msg::ColorInput(ColorSlot::Accent, value.into()));
             assert_eq!(app.customization, before);
-            assert!(app.settings.invalid());
+            assert!(app.settings.has_invalid_draft());
         }
     }
 }

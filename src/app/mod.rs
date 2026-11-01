@@ -252,7 +252,7 @@ impl App {
         match message {
             Message::PickWorkspace => self.pick_workspace(),
             Message::NewNote => {
-                let _ = self.ask_create(PathBuf::new(), Point::new(26.0, 192.0), None);
+                let _ = self.ask_create(PathBuf::new(), NEW_NOTE_PROMPT_AT, None);
                 self.pick_create(CreateKind::Note)
             }
             Message::WorkspacePicked(None) => Task::none(),
@@ -445,7 +445,8 @@ impl App {
         if self.live_is_resizing() {
             parts.push(event::listen_with(live_resize));
         }
-        // Escape closes the create menu even when a text field already handled the key.
+        // Escape closes the create menu or settings even when a text field
+        // already handled the key.
         if self.create.is_some() || self.settings.open {
             parts.push(event::listen_with(dismiss_on_escape));
         }
@@ -456,6 +457,8 @@ impl App {
 const SOURCE_EDITOR_ID: &str = "source-editor";
 const CREATE_NAME_ID: &str = "create-name";
 const SIDEBAR_WIDTH: f32 = 272.0;
+/// Where the prompt opened by "New note" appears.
+const NEW_NOTE_PROMPT_AT: Point = Point::new(26.0, 192.0);
 
 const MEDIUM: Font = Font {
     weight: Weight::Medium,

@@ -8,7 +8,7 @@ use iced::widget::{
 use iced::{Element, Fill, Font};
 
 use super::style::{
-    backlink_row, chassis, editor_style, line, panel, quiet_button, segment, switch, unsaved_style,
+    backlink_row, canvas, editor_style, line, panel, quiet_button, segment, switch, unsaved_style,
     with_tip, word_count, words_label, writing_surface,
 };
 use super::{App, Doc, MEDIUM, Message, Mode, SIDEBAR_WIDTH, SOURCE_EDITOR_ID};
@@ -54,7 +54,7 @@ impl App {
             self.layer_popup(
                 container(body)
                     .padding(12)
-                    .style(chassis)
+                    .style(canvas)
                     .width(Fill)
                     .height(Fill),
             ),
