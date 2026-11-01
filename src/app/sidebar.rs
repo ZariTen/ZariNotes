@@ -35,12 +35,17 @@ impl App {
     }
 
     fn brand(&self) -> Element<'_, Message> {
-        let look = theme::tokens(self.appearance);
+        let look = self.look();
         row![
             container(text("z").size(23).font(MEDIUM).color(look.accent_text))
                 .center(34)
                 .style(super::style::brand_mark),
-            text("ZariNotes").size(18).font(MEDIUM),
+            text("ZariNotes").size(18).font(MEDIUM).width(Fill),
+            icon_button(
+                icons::settings(),
+                "Settings",
+                Some(Message::Settings(super::settings::Msg::Open))
+            ),
         ]
         .spacing(10)
         .align_y(iced::Center)
@@ -96,7 +101,7 @@ impl App {
             return column![].into();
         };
         row![
-            workspace_title(workspace, self.appearance),
+            workspace_title(workspace, self.look()),
             icon_button(
                 icons::open_folder(),
                 "Open folder",
@@ -173,7 +178,7 @@ impl App {
         let Some(clicked) = &prompt.clicked else {
             return choose_menu(false);
         };
-        let look = theme::tokens(self.appearance);
+        let look = self.look();
         let warning = delete_warning(clicked, self.lost_unsaved(clicked));
         column![
             text("Are you sure?").size(14).font(MEDIUM),
@@ -226,7 +231,7 @@ impl App {
     }
 
     fn notes_header(&self) -> Element<'_, Message> {
-        let look = theme::tokens(self.appearance);
+        let look = self.look();
         row![
             text("Notes").size(10).font(LABEL).color(look.muted),
             space::horizontal(),
@@ -242,7 +247,7 @@ impl App {
         let mut rows = Vec::new();
         self.tree_rows(&self.tree, Path::new(""), 0, &self.filter, false, &mut rows);
         if rows.is_empty() {
-            rows.push(empty_tree_message(&self.filter, self.appearance));
+            rows.push(empty_tree_message(&self.filter, self.look()));
         }
         rows
     }
@@ -338,12 +343,7 @@ impl App {
             row_label(label, if selected { MEDIUM } else { crate::UI_FONT }),
         ];
         if selected && self.dirty {
-            parts.push(
-                text("●")
-                    .size(8)
-                    .color(theme::tokens(self.appearance).warning)
-                    .into(),
-            );
+            parts.push(text("●").size(8).color(self.look().warning).into());
         }
         let parent = prefix.to_path_buf();
         let clicked = Clicked::Note(path.clone());
@@ -449,8 +449,7 @@ fn name_placeholder(kind: CreateKind) -> &'static str {
     }
 }
 
-fn workspace_title(workspace: &Path, appearance: theme::Appearance) -> Element<'static, Message> {
-    let look = theme::tokens(appearance);
+fn workspace_title(workspace: &Path, look: theme::Tokens) -> Element<'static, Message> {
     line(folder_name(workspace), 15.0, MEDIUM, look.ink)
 }
 
@@ -473,8 +472,8 @@ fn note_count(filter: &str, tree: &Dir) -> String {
     }
 }
 
-fn empty_tree_message(filter: &str, appearance: theme::Appearance) -> Element<'static, Message> {
-    let muted = theme::tokens(appearance).muted;
+fn empty_tree_message(filter: &str, look: theme::Tokens) -> Element<'static, Message> {
+    let muted = look.muted;
     let message = if filter.trim().is_empty() {
         "No notes".into()
     } else {

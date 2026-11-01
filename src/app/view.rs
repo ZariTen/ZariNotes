@@ -14,7 +14,7 @@ use super::style::{
 use super::{App, Doc, MEDIUM, Message, Mode, SIDEBAR_WIDTH, SOURCE_EDITOR_ID};
 use crate::highlight;
 use crate::live::{self, Live};
-use crate::theme::{self, Appearance};
+use crate::theme;
 
 impl App {
     pub(super) fn view(&self) -> Element<'_, Message> {
@@ -50,17 +50,19 @@ impl App {
         .spacing(12)
         .height(Fill);
 
-        self.layer_popup(
-            container(body)
-                .padding(12)
-                .style(chassis)
-                .width(Fill)
-                .height(Fill),
+        self.layer_settings(
+            self.layer_popup(
+                container(body)
+                    .padding(12)
+                    .style(chassis)
+                    .width(Fill)
+                    .height(Fill),
+            ),
         )
     }
 
     fn editor_header(&self) -> Element<'_, Message> {
-        let look = theme::tokens(self.appearance);
+        let look = self.look();
         let title = self
             .current
             .as_ref()
@@ -81,14 +83,14 @@ impl App {
         match &self.doc {
             Some(Doc::Live(live)) => {
                 let note_dir = self.note_dir();
-                live_editor(live, self.appearance, note_dir.as_deref())
+                live_editor(live, self.app_theme(), note_dir.as_deref())
             }
             Some(Doc::Source(content)) => source_editor(content),
             None => self.empty_editor(),
         }
     }
 
-    /// Save state, word count, cursor, and appearance. Editing mode lives in the header.
+    /// Save state, word count, and cursor. Editing mode lives in the header.
     fn footer(&self) -> Element<'_, Message> {
         row![
             container(self.footer_status()).width(Fill).clip(true),
@@ -101,7 +103,7 @@ impl App {
     }
 
     fn footer_status(&self) -> Element<'_, Message> {
-        let look = theme::tokens(self.appearance);
+        let look = self.look();
         if let Some(err) = &self.notice {
             return line(err.clone(), 12.0, crate::UI_FONT, look.danger);
         }
@@ -145,7 +147,7 @@ impl App {
     }
 
     fn backlinks_header(&self, count: usize) -> Element<'_, Message> {
-        let look = theme::tokens(self.appearance);
+        let look = self.look();
         let open = self.backlinks_open && count > 0;
         let color = if count == 0 { look.muted } else { look.ink };
         button(
@@ -167,7 +169,7 @@ impl App {
     }
 
     fn save_state(&self) -> Element<'_, Message> {
-        let muted = theme::tokens(self.appearance).muted;
+        let muted = self.look().muted;
         if !self.dirty {
             return text("Saved").size(12).color(muted).into();
         }
@@ -183,7 +185,7 @@ impl App {
     }
 
     fn footer_stats(&self) -> Vec<Element<'_, Message>> {
-        let muted = theme::tokens(self.appearance).muted;
+        let muted = self.look().muted;
         let mut stats = Vec::new();
         if self.doc.is_some() {
             let words = self.text().as_deref().map(word_count).unwrap_or(0);
@@ -197,25 +199,7 @@ impl App {
                 );
             }
         }
-        stats.push(self.theme_switch());
         stats
-    }
-
-    fn theme_switch(&self) -> Element<'_, Message> {
-        switch([
-            segment(
-                "Light",
-                self.appearance == Appearance::Light,
-                "Paper — warm ivory and deep teal",
-                Message::SetAppearance(Appearance::Light),
-            ),
-            segment(
-                "Dark",
-                self.appearance == Appearance::Dark,
-                "Ink — charcoal and soft jade",
-                Message::SetAppearance(Appearance::Dark),
-            ),
-        ])
     }
 
     fn empty_editor(&self) -> Element<'_, Message> {
@@ -251,10 +235,9 @@ impl App {
 
 fn live_editor<'a>(
     live: &'a Live,
-    appearance: Appearance,
+    theme: iced::Theme,
     note_dir: Option<&std::path::Path>,
 ) -> Element<'a, Message> {
-    let theme = theme::iced(appearance);
     live.view(&theme, note_dir).map(Message::Live)
 }
 

@@ -87,13 +87,13 @@ fn chevron_alpha(open: bool) -> f32 {
 }
 
 fn accent(theme: &Theme) -> Color {
-    theme.extended_palette().primary.base.color
+    crate::theme::tokens_of(theme).link
 }
 
 fn file_color(selected: bool, theme: &Theme) -> Color {
     let palette = theme.extended_palette();
     if selected {
-        return palette.primary.base.color;
+        return crate::theme::tokens_of(theme).link;
     }
     palette.background.base.text.scale_alpha(0.8)
 }
@@ -116,6 +116,21 @@ pub fn plus<'a>() -> Svg<'a> {
     icon(&PLUS, 16.0, |theme| {
         crate::theme::tokens_of(theme).accent_text
     })
+}
+
+/// Appearance preferences.
+pub fn settings<'a>() -> Svg<'a> {
+    static SETTINGS: LazyLock<svg::Handle> = LazyLock::new(|| {
+        svg::Handle::from_memory(br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m9 3-.6 2.4-2 .9-2.2-.7-2 3.4 1.7 1.7v2.6L2.2 15l2 3.4 2.2-.7 2 .9L9 21h4l.6-2.4 2-.9 2.2.7 2-3.4-1.7-1.7v-2.6L19.8 9l-2-3.4-2.2.7-2-.9L13 3Z"/><circle cx="11" cy="12" r="3"/></svg>"#)
+    });
+    icon(&SETTINGS, 16.0, ink(0.85))
+}
+
+pub fn close<'a>() -> Svg<'a> {
+    static CLOSE: LazyLock<svg::Handle> = LazyLock::new(|| {
+        svg::Handle::from_memory(br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>"#)
+    });
+    icon(&CLOSE, 16.0, ink(0.85))
 }
 
 /// Pull tab for the bottom-right corner of an image.

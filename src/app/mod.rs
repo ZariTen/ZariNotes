@@ -4,6 +4,7 @@ mod create;
 mod document;
 mod history;
 mod paste;
+mod settings;
 mod sidebar;
 mod style;
 mod view;
@@ -33,7 +34,7 @@ pub(crate) fn run() -> iced::Result {
         .font(include_bytes!("../../assets/fonts/Inter.ttf").as_slice())
         .default_font(crate::UI_FONT)
         .subscription(App::subscription)
-        .theme(|app: &App| theme::iced(app.appearance))
+        .theme(App::app_theme)
         .window(window_settings())
         .run()
 }
@@ -78,6 +79,8 @@ struct App {
     /// Problem worth showing in the footer. Routine success is not stored.
     notice: Option<String>,
     appearance: Appearance,
+    customization: theme::Customization,
+    settings: settings::State,
     /// Whether the backlink list under the editor is expanded. Kept across notes.
     backlinks_open: bool,
 }
@@ -174,7 +177,9 @@ enum Message {
     /// Permanently delete the confirmed note or folder.
     ConfirmDelete,
     DismissCreate,
+    CloseOverlay,
     SetAppearance(Appearance),
+    Settings(settings::Msg),
     /// Ctrl+V. An image on the clipboard is saved; otherwise the text is pasted.
     Paste,
     ClipboardOffer(crate::images::ClipboardOffer),
@@ -188,6 +193,8 @@ enum Message {
 
 impl App {
     fn new() -> (Self, Task<Message>) {
+        let appearance = load_appearance();
+        let customization = crate::config::load_customization();
         let app = Self {
             workspace: None,
             tree: Dir::default(),
@@ -202,7 +209,9 @@ impl App {
             create: None,
             filter: String::new(),
             notice: None,
-            appearance: load_appearance(),
+            appearance,
+            customization,
+            settings: settings::State::new(customization.colors(appearance)),
             backlinks_open: load_backlinks_open(),
         };
 
@@ -212,6 +221,20 @@ impl App {
             _ => Task::none(),
         };
         (app, task)
+    }
+
+    fn look(&self) -> theme::Tokens {
+        theme::tokens_with(
+            self.appearance,
+            self.customization.override_for(self.appearance),
+        )
+    }
+
+    fn app_theme(&self) -> iced::Theme {
+        match self.customization.override_for(self.appearance) {
+            Some(colors) => theme::custom(self.appearance, Some(colors)),
+            None => theme::iced(self.appearance),
+        }
     }
 
     fn title(&self) -> String {
@@ -272,7 +295,13 @@ impl App {
                 self.create = None;
                 Task::none()
             }
+            Message::CloseOverlay => {
+                self.create = None;
+                self.settings.open = false;
+                Task::none()
+            }
             Message::SetAppearance(appearance) => self.set_appearance(appearance),
+            Message::Settings(message) => self.update_settings(message),
             Message::Paste => self.paste(),
             Message::ClipboardOffer(offer) => self.clipboard_offer(offer),
             Message::PasteText {
@@ -335,6 +364,7 @@ impl App {
             return Task::none();
         }
         self.appearance = appearance;
+        self.settings.sync(self.customization.colors(appearance));
         save_appearance(appearance);
         Task::none()
     }
@@ -416,7 +446,7 @@ impl App {
             parts.push(event::listen_with(live_resize));
         }
         // Escape closes the create menu even when a text field already handled the key.
-        if self.create.is_some() {
+        if self.create.is_some() || self.settings.open {
             parts.push(event::listen_with(dismiss_on_escape));
         }
         Subscription::batch(parts)
@@ -458,7 +488,7 @@ fn dismiss_on_escape(
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(keyboard::key::Named::Escape),
             ..
-        }) => Some(Message::DismissCreate),
+        }) => Some(Message::CloseOverlay),
         _ => None,
     }
 }

@@ -382,7 +382,11 @@ pub(super) fn rounded_subtle(theme: &Theme, status: button::Status) -> button::S
 }
 
 fn danger_text(look: theme::Tokens) -> Color {
-    if look.dark { look.canvas } else { look.raised }
+    if Color::BLACK.relative_contrast(look.danger) >= Color::WHITE.relative_contrast(look.danger) {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    }
 }
 
 /// Flat, softly rounded actions; interaction is expressed through tone.
@@ -451,7 +455,7 @@ fn flat_row(theme: &Theme, status: button::Status, selected: bool) -> button::St
     let look = theme::tokens_of(theme);
     button::Style {
         background: row_fill(look, selected, status),
-        text_color: if selected { look.link } else { look.ink },
+        text_color: look.ink,
         border: Border {
             color: if selected {
                 look.accent.scale_alpha(0.18)
@@ -471,20 +475,12 @@ fn row_fill(
     status: button::Status,
 ) -> Option<iced::Background> {
     if selected {
-        return Some(look.accent.scale_alpha(selected_alpha(status)).into());
+        return Some(look.selection.into());
     }
     match status {
         button::Status::Hovered => Some(look.raised.into()),
         button::Status::Pressed => Some(look.surface.into()),
         _ => None,
-    }
-}
-
-fn selected_alpha(status: button::Status) -> f32 {
-    if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        0.16
-    } else {
-        0.10
     }
 }
 
@@ -516,6 +512,33 @@ mod tests {
                     super::flat_row(&theme, status, true).background,
                     super::flat_row(&theme, status, false).background
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn custom_selection_and_destructive_actions_keep_readable_legends() {
+        for appearance in [
+            crate::theme::Appearance::Light,
+            crate::theme::Appearance::Dark,
+        ] {
+            let theme = crate::theme::custom(
+                appearance,
+                Some(crate::theme::Colors {
+                    accent: iced::Color::WHITE,
+                    page: iced::Color::WHITE,
+                    sidebar: iced::Color::BLACK,
+                    text: iced::Color::WHITE,
+                }),
+            );
+            for style in [
+                super::flat_row(&theme, iced::widget::button::Status::Active, true),
+                super::rounded_danger(&theme, iced::widget::button::Status::Active),
+            ] {
+                let Some(iced::Background::Color(fill)) = style.background else {
+                    panic!("solid fill expected")
+                };
+                assert!(style.text_color.relative_contrast(fill) >= 4.5);
             }
         }
     }

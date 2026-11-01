@@ -38,6 +38,136 @@ impl Appearance {
     }
 }
 
+/// The four user-editable colors. Other theme colors are derived from these.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Colors {
+    pub accent: Color,
+    pub page: Color,
+    pub sidebar: Color,
+    pub text: Color,
+}
+
+impl Colors {
+    /// Validate opaque RGB input. Incompatible surface lightness and unreadable
+    /// text are adjusted automatically by `tokens_with`, not rejected.
+    pub fn validate(self) -> Result<(), &'static str> {
+        for slot in ColorSlot::ALL {
+            let c = slot.get(self);
+            if ![c.r, c.g, c.b]
+                .into_iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+                || c.a != 1.0
+            {
+                return Err("Colors must be opaque RGB values.");
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorSlot {
+    Accent,
+    Page,
+    Sidebar,
+    Text,
+}
+
+impl ColorSlot {
+    pub const ALL: [Self; 4] = [Self::Accent, Self::Page, Self::Sidebar, Self::Text];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Accent => "Accent",
+            Self::Page => "Page",
+            Self::Sidebar => "Sidebar",
+            Self::Text => "Text",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::Accent => 0,
+            Self::Page => 1,
+            Self::Sidebar => 2,
+            Self::Text => 3,
+        }
+    }
+
+    pub fn get(self, colors: Colors) -> Color {
+        match self {
+            Self::Accent => colors.accent,
+            Self::Page => colors.page,
+            Self::Sidebar => colors.sidebar,
+            Self::Text => colors.text,
+        }
+    }
+
+    pub fn set(self, colors: &mut Colors, value: Color) {
+        match self {
+            Self::Accent => colors.accent = value,
+            Self::Page => colors.page = value,
+            Self::Sidebar => colors.sidebar = value,
+            Self::Text => colors.text = value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Customization {
+    pub light: Option<Colors>,
+    pub dark: Option<Colors>,
+}
+
+impl Customization {
+    pub fn colors(self, appearance: Appearance) -> Colors {
+        self.override_for(appearance).unwrap_or_else(|| {
+            let t = tokens(appearance);
+            Colors {
+                accent: t.accent,
+                page: t.surface,
+                sidebar: t.panel,
+                text: t.ink,
+            }
+        })
+    }
+
+    pub fn override_for(self, appearance: Appearance) -> Option<Colors> {
+        match appearance {
+            Appearance::Light => self.light,
+            Appearance::Dark => self.dark,
+        }
+    }
+
+    pub fn set(&mut self, appearance: Appearance, colors: Colors) {
+        match appearance {
+            Appearance::Light => self.light = Some(colors),
+            Appearance::Dark => self.dark = Some(colors),
+        }
+    }
+
+    pub fn reset(&mut self, appearance: Appearance) {
+        match appearance {
+            Appearance::Light => self.light = None,
+            Appearance::Dark => self.dark = None,
+        }
+    }
+}
+
+/// Exactly six ASCII hexadecimal digits, with an optional leading `#`.
+pub fn parse_hex(value: &str) -> Option<Color> {
+    let digits = value.strip_prefix('#').unwrap_or(value);
+    if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok().map(rgb)
+}
+
+pub fn hex(color: Color) -> String {
+    let [r, g, b, _] = color.into_rgba8();
+    format!("#{r:02X}{g:02X}{b:02X}")
+}
+
 /// Shared surface, typography, interaction, and semantic color tokens.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tokens {
@@ -75,21 +205,238 @@ pub fn tokens(appearance: Appearance) -> Tokens {
     }
 }
 
-/// Resolve tokens from the theme iced is currently painting with.
-///
-/// iced only gives us the name we registered in [`iced`].
+/// Resolve custom colors from the actual palette, without process-global state.
+/// Reconstructing with the already-corrected foreground is intentionally stable.
 pub fn tokens_of(theme: &Theme) -> Tokens {
-    if theme.name() == Appearance::Dark.title() {
-        return tokens(Appearance::Dark);
+    let appearance =
+        if theme.name() == Appearance::Dark.title() || theme.name().starts_with("Custom Ink ") {
+            Appearance::Dark
+        } else {
+            Appearance::Light
+        };
+    if theme.name().starts_with("Custom Paper ") || theme.name().starts_with("Custom Ink ") {
+        let p = theme.extended_palette();
+        return tokens_with(
+            appearance,
+            Some(Colors {
+                accent: p.primary.base.color,
+                page: p.background.base.color,
+                sidebar: p.background.weakest.color,
+                text: p.background.base.text,
+            }),
+        );
     }
-    tokens(Appearance::Light)
+    tokens(appearance)
 }
 
 pub fn iced(appearance: Appearance) -> Theme {
-    let look = tokens(appearance);
-    Theme::custom_with_fn(appearance.title(), base_palette(look), move |_| {
-        extended(look)
+    custom(appearance, None)
+}
+
+pub fn custom(appearance: Appearance, colors: Option<Colors>) -> Theme {
+    let look = tokens_with(appearance, colors);
+    // Names also change with the palette: iced uses them for widget caches.
+    let name = if let Some(colors) = colors.filter(|c| c.validate().is_ok()) {
+        format!(
+            "Custom {} {} {} {} {}",
+            appearance.title(),
+            hex(colors.accent),
+            hex(colors.page),
+            hex(colors.sidebar),
+            hex(colors.text)
+        )
+    } else {
+        appearance.title().to_owned()
+    };
+    Theme::custom_with_fn(name, base_palette(look), move |_| {
+        if colors.is_some_and(|c| c.validate().is_ok()) {
+            custom_extended(look)
+        } else {
+            extended(look)
+        }
     })
+}
+
+/// Preserve the built-in palettes exactly until an override is supplied.
+pub fn tokens_with(appearance: Appearance, colors: Option<Colors>) -> Tokens {
+    match colors.filter(|c| c.validate().is_ok()) {
+        Some(colors) => custom_tokens(appearance, colors),
+        None => tokens(appearance),
+    }
+}
+
+fn mix(a: Color, b: Color, amount: f32) -> Color {
+    Color::from_rgb(
+        a.r + (b.r - a.r) * amount,
+        a.g + (b.g - a.g) * amount,
+        a.b + (b.b - a.b) * amount,
+    )
+}
+
+// Intersect the allowed foreground-luminance intervals for every surface.
+// A tiny margin prevents f32 roundoff from dropping a corrected color below AA.
+fn luminance_ranges(surfaces: &[Color]) -> Vec<(f32, f32)> {
+    const RATIO: f32 = 4.5001;
+    let mut ranges = vec![(0.0_f32, 1.0_f32)];
+    for surface in surfaces {
+        let lum = surface.relative_luminance();
+        let allowed = [
+            (0.0, (lum + 0.05) / RATIO - 0.05),
+            (RATIO * (lum + 0.05) - 0.05, 1.0),
+        ];
+        ranges = ranges
+            .into_iter()
+            .flat_map(|(lo, hi)| {
+                allowed.into_iter().filter_map(move |(a, b)| {
+                    let lower = lo.max(a);
+                    let upper = hi.min(b);
+                    (lower <= upper).then_some((lower, upper))
+                })
+            })
+            .collect();
+    }
+    ranges
+}
+
+fn readable(color: Color, surfaces: &[Color]) -> bool {
+    surfaces.iter().all(|s| color.relative_contrast(*s) >= 4.5)
+}
+
+/// Move only as far toward black/white as needed, retaining the requested hue.
+fn foreground(color: Color, surfaces: &[Color]) -> Color {
+    if readable(color, surfaces) {
+        return color;
+    }
+    let lum = color.relative_luminance();
+    let target = luminance_ranges(surfaces)
+        .into_iter()
+        .map(|(lo, hi)| lum.clamp(lo, hi))
+        .min_by(|a, b| (a - lum).abs().total_cmp(&(b - lum).abs()))
+        .expect("custom surfaces always have a shared foreground");
+    let end = if target < lum {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    };
+    let mut lo = 0.0;
+    let mut hi = 1.0;
+    for _ in 0..30 {
+        let mid = (lo + hi) / 2.0;
+        let candidate = mix(color, end, mid);
+        if (candidate.relative_luminance() < target) == (target < lum) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    mix(color, end, (lo + hi) / 2.0)
+}
+
+fn custom_tokens(appearance: Appearance, colors: Colors) -> Tokens {
+    let base = tokens(appearance);
+    let page = colors.page;
+    let mut panel = colors.sidebar;
+    // Some mixed-lightness surfaces cannot share any AA foreground. Preserve
+    // the page and accent exactly, moving only the sidebar toward the page in
+    // 1% increments until compatible. Stored choices remain untouched.
+    if luminance_ranges(&[page, panel]).is_empty() {
+        for step in 1..=100 {
+            panel = mix(colors.sidebar, page, step as f32 / 100.0);
+            if !luminance_ranges(&[page, panel]).is_empty() {
+                break;
+            }
+        }
+    }
+    let mut canvas = mix(page, Color::BLACK, if base.dark { 0.16 } else { 0.035 });
+    let mut raised = mix(page, Color::WHITE, if base.dark { 0.045 } else { 0.35 });
+    // Very narrow feasible ranges (e.g. black beside white) leave no room for
+    // surface layering. Readability takes precedence over decorative elevation.
+    if luminance_ranges(&[page, panel, canvas, raised]).is_empty() {
+        canvas = page;
+        raised = page;
+    }
+    let surfaces = [page, panel, canvas, raised];
+    let ink = foreground(colors.text, &surfaces);
+    let accent_text = if Color::BLACK.relative_contrast(colors.accent)
+        >= Color::WHITE.relative_contrast(colors.accent)
+    {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    };
+    let accent_end = if accent_text == Color::BLACK {
+        Color::WHITE
+    } else {
+        Color::BLACK
+    };
+    let mut selection = mix(page, colors.accent, 0.18);
+    if !readable(ink, &[selection]) {
+        selection = page;
+    }
+    let mut track = mix(panel, ink, 0.08);
+    if !readable(ink, &[track]) {
+        track = panel;
+    }
+    Tokens {
+        canvas,
+        surface: page,
+        panel,
+        raised,
+        track,
+        accent: colors.accent,
+        accent_hover: mix(colors.accent, accent_end, 0.12),
+        accent_text,
+        accent_edge: mix(colors.accent, accent_end, 0.28),
+        ink,
+        muted: foreground(mix(ink, page, 0.30), &surfaces),
+        border: mix(page, ink, 0.16),
+        border_strong: mix(page, ink, 0.34),
+        lip: mix(panel, ink, 0.22),
+        link: foreground(colors.accent, &surfaces),
+        selection,
+        success: foreground(base.success, &surfaces),
+        warning: foreground(base.warning, &surfaces),
+        danger: foreground(base.danger, &surfaces),
+        focus: foreground(colors.accent, &surfaces),
+        dark: base.dark,
+    }
+}
+
+/// Stock widgets can paint on semantic fills too; choose text per pair instead
+/// of reusing the page foreground. Keep the legacy palette mapping unchanged.
+fn custom_extended(look: Tokens) -> Extended {
+    let mut p = extended(look);
+    fn correct(pair: &mut Pair) {
+        pair.text = foreground(pair.text, &[pair.color]);
+    }
+    for pair in [
+        &mut p.background.base,
+        &mut p.background.weakest,
+        &mut p.background.weaker,
+        &mut p.background.weak,
+        &mut p.background.neutral,
+        &mut p.background.strong,
+        &mut p.background.stronger,
+        &mut p.background.strongest,
+        &mut p.primary.base,
+        &mut p.primary.weak,
+        &mut p.primary.strong,
+        &mut p.secondary.base,
+        &mut p.secondary.weak,
+        &mut p.secondary.strong,
+        &mut p.success.base,
+        &mut p.success.weak,
+        &mut p.success.strong,
+        &mut p.warning.base,
+        &mut p.warning.weak,
+        &mut p.warning.strong,
+        &mut p.danger.base,
+        &mut p.danger.weak,
+        &mut p.danger.strong,
+    ] {
+        correct(pair);
+    }
+    p
 }
 
 const PAPER: Tokens = Tokens {
@@ -272,8 +619,131 @@ pub fn scrollbar(
 
 #[cfg(test)]
 mod tests {
-    use super::{Appearance, iced, tokens, tokens_of};
+    use super::*;
     use iced::theme::Base;
+
+    #[test]
+    fn hex_is_strict_and_round_trips() {
+        for s in [
+            "",
+            "#",
+            "fff",
+            "#12345",
+            "#1234567",
+            "#12345678",
+            "##123456",
+            "#invalid",
+            "12345g",
+            " 123456",
+            "123456\n",
+            "+12345",
+            "🦀ff",
+        ] {
+            assert_eq!(parse_hex(s), None, "{s:?}");
+        }
+        assert_eq!(parse_hex("aBcD01"), Some(rgb(0xABCD01)));
+        assert_eq!(parse_hex("#abcdef"), Some(rgb(0xABCDEF)));
+        for c in [Color::WHITE, Color::BLACK, rgb(0x1A2B3C)] {
+            assert_eq!(parse_hex(&hex(c)), Some(c));
+        }
+        assert_eq!(hex(rgb(0x12AB03)), "#12AB03");
+    }
+
+    fn assert_custom_contrast(appearance: Appearance, colors: Colors) {
+        let t = tokens_with(appearance, Some(colors));
+        assert_eq!(t.surface, colors.page);
+        assert_eq!(t.accent, colors.accent);
+        for surface in [t.surface, t.panel, t.canvas, t.raised] {
+            for text in [
+                t.ink, t.muted, t.link, t.success, t.warning, t.danger, t.focus,
+            ] {
+                assert!(
+                    text.relative_contrast(surface) >= 4.5,
+                    "{appearance:?} {colors:?}: {text:?} on {surface:?} = {}",
+                    text.relative_contrast(surface)
+                );
+            }
+        }
+        assert!(t.ink.relative_contrast(t.selection) >= 4.5);
+        assert!(t.accent_text.relative_contrast(t.accent) >= 4.5);
+        assert!(t.accent_text.relative_contrast(t.accent_hover) >= 4.5);
+        let theme = custom(appearance, Some(colors));
+        assert_eq!(
+            tokens_of(&theme),
+            t,
+            "custom widget token resolution must be exact"
+        );
+        let p = theme.extended_palette();
+        for pair in [
+            p.background.base,
+            p.background.weakest,
+            p.background.weaker,
+            p.background.weak,
+            p.background.neutral,
+            p.background.strong,
+            p.background.stronger,
+            p.background.strongest,
+            p.primary.base,
+            p.primary.weak,
+            p.primary.strong,
+            p.secondary.base,
+            p.secondary.weak,
+            p.secondary.strong,
+            p.success.base,
+            p.success.weak,
+            p.success.strong,
+            p.warning.base,
+            p.warning.weak,
+            p.warning.strong,
+            p.danger.base,
+            p.danger.weak,
+            p.danger.strong,
+        ] {
+            assert!(pair.text.relative_contrast(pair.color) >= 4.5);
+        }
+    }
+
+    #[test]
+    fn extremes_and_mixed_surfaces_are_adjusted_without_losing_page_or_accent() {
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            for (page, sidebar, text, accent) in [
+                (0xFFFFFF, 0xFFFFFF, 0xFFFFFF, 0xFFFFFF),
+                (0x000000, 0x000000, 0x000000, 0x000000),
+                (0x000000, 0xFFFFFF, 0xFFFFFF, 0xFF00FF),
+                (0xFFFFFF, 0x000000, 0x000000, 0xFFFF00),
+                (0x595959, 0xCCCCCC, 0xAAAAAA, 0x00FFFF),
+                (0xCCCCCC, 0x595959, 0x777777, 0xFF0000),
+                (0x757575, 0x757575, 0x757575, 0x00FF00),
+            ] {
+                assert_custom_contrast(
+                    appearance,
+                    Colors {
+                        page: rgb(page),
+                        sidebar: rgb(sidebar),
+                        text: rgb(text),
+                        accent: rgb(accent),
+                    },
+                );
+            }
+            let c = Colors {
+                page: Color::WHITE,
+                sidebar: Color::WHITE,
+                text: Color::BLACK,
+                accent: rgb(0x123456),
+            };
+            assert_eq!(tokens_with(appearance, Some(c)).ink, c.text);
+        }
+        let mixed = Colors {
+            page: rgb(0x595959),
+            sidebar: rgb(0xCCCCCC),
+            text: Color::WHITE,
+            accent: Color::BLACK,
+        };
+        assert_ne!(
+            tokens_with(Appearance::Light, Some(mixed)).panel,
+            mixed.sidebar
+        );
+    }
 
     #[test]
     fn appearance_round_trips() {
