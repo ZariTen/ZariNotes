@@ -27,29 +27,15 @@ impl App {
         } else {
             self.closed_sidebar()
         };
-        container(column![self.brand(), body].spacing(28))
-            .padding(20)
-            .width(Fill)
-            .height(Fill)
-            .into()
+        container(body).padding(20).width(Fill).height(Fill).into()
     }
 
-    fn brand(&self) -> Element<'_, Message> {
-        let look = self.look();
-        row![
-            container(text("z").size(23).font(MEDIUM).color(look.accent_text))
-                .center(34)
-                .style(super::style::brand_mark),
-            text("ZariNotes").size(18).font(MEDIUM).width(Fill),
-            icon_button(
-                icons::settings(),
-                "Settings",
-                Some(Message::Settings(super::settings::Msg::Open))
-            ),
-        ]
-        .spacing(10)
-        .align_y(iced::Center)
-        .into()
+    fn settings_button(&self) -> Element<'_, Message> {
+        icon_button(
+            icons::settings(),
+            "Settings",
+            Some(Message::Settings(super::settings::Msg::Open)),
+        )
     }
 
     /// Search bar and the note tree. A right-click opens a popup at the cursor.
@@ -88,12 +74,17 @@ impl App {
     }
 
     fn closed_sidebar(&self) -> Element<'_, Message> {
-        button(text("Open folder").size(14))
-            .width(Fill)
-            .padding([10, 12])
-            .style(rounded_primary)
-            .on_press(Message::PickWorkspace)
-            .into()
+        row![
+            button(text("Open folder").size(14))
+                .width(Fill)
+                .padding([10, 12])
+                .style(rounded_primary)
+                .on_press(Message::PickWorkspace),
+            self.settings_button(),
+        ]
+        .spacing(6)
+        .align_y(iced::Center)
+        .into()
     }
 
     fn workspace_header(&self) -> Element<'_, Message> {
@@ -108,6 +99,7 @@ impl App {
                 Some(Message::PickWorkspace)
             ),
             icon_button(icons::refresh(), "Refresh", Some(Message::Refresh)),
+            self.settings_button(),
         ]
         .spacing(6)
         .align_y(iced::Center)

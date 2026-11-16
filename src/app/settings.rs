@@ -1,10 +1,10 @@
 //! Appearance and font controls. Editing modes remain in the note header.
 
 use iced::widget::{
-    button, column, container, mouse_area, pick_list, row, scrollable, space, stack, text,
+    button, column, container, mouse_area, pick_list, row, rule, scrollable, space, stack, text,
     text_input,
 };
-use iced::{Border, Color, Element, Fill, Padding, Task};
+use iced::{Border, Color, Element, Fill, Task};
 
 use super::style::{
     field_style, icon_button, menu_card, picker_menu, picker_style, rounded_subtle, segment, switch,
@@ -180,21 +180,64 @@ impl App {
         if !self.settings.open {
             return window;
         }
-        // A compact overlay leaves the note's mode controls in their usual place.
-        let card = container(scrollable(self.settings_panel()).style(theme::scrollbar))
-            .padding(16)
-            .width(360)
-            .max_height(430)
-            .style(|theme| container::Style {
-                shadow: iced::Shadow::default(),
-                ..menu_card(theme)
-            });
+        // A modal inside the existing window, never a separate OS window.
+        let look = self.look();
+        let header = row![
+            text("Settings").size(22).font(LABEL).width(Fill),
+            icon_button(
+                crate::icons::close(),
+                "Close settings",
+                Some(Message::Settings(Msg::Close))
+            ),
+        ]
+        .align_y(iced::Center);
+        let footer = row![
+            text(if self.settings.save_error.is_some() {
+                "Changes could not be saved."
+            } else {
+                "Changes are saved automatically."
+            })
+            .size(12)
+            .color(if self.settings.save_error.is_some() {
+                look.danger
+            } else {
+                look.muted
+            })
+            .width(Fill),
+            button(text("Done").size(14))
+                .padding([8, 16])
+                .style(rounded_subtle)
+                .on_press(Message::Settings(Msg::Close)),
+        ]
+        .spacing(12)
+        .align_y(iced::Center);
+        let card = container(
+            column![
+                header,
+                scrollable(container(self.settings_panel()).padding(iced::Padding::ZERO.right(16)))
+                    .style(theme::scrollbar)
+                    .direction(scrollable::Direction::Vertical(
+                        scrollable::Scrollbar::new().width(5).scroller_width(5)
+                    ))
+                    .height(Fill),
+                footer,
+            ]
+            .spacing(18),
+        )
+        .padding(24)
+        .width(560)
+        .max_height(640)
+        .style(menu_card);
+        let backdrop = container(space().width(Fill).height(Fill)).style(|_| container::Style {
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
+            ..container::Style::default()
+        });
         stack![
             window,
-            mouse_area(space().width(Fill).height(Fill)).on_press(Message::Settings(Msg::Close)),
+            mouse_area(backdrop).on_press(Message::Settings(Msg::Close)),
             container(mouse_area(card).on_press(Message::Settings(Msg::KeepOpen)))
-                .align_right(Fill)
-                .padding(Padding::ZERO.top(76).right(20)),
+                .padding(24)
+                .center(Fill),
         ]
         .width(Fill)
         .height(Fill)
@@ -203,64 +246,71 @@ impl App {
 
     fn settings_panel(&self) -> Element<'_, Message> {
         let look = self.look();
-        let mut body = column![
-            row![
-                text("Settings").size(16).font(LABEL).width(Fill),
-                icon_button(
-                    crate::icons::close(),
-                    "Close",
-                    Some(Message::Settings(Msg::Close))
+        let theme_section = row![
+            text("Theme").size(16).font(LABEL).width(Fill),
+            switch([
+                segment(
+                    "Light",
+                    self.appearance == Appearance::Light,
+                    "Light theme",
+                    Message::SetAppearance(Appearance::Light)
                 ),
-            ]
-            .align_y(iced::Center),
-            row![
-                text("Appearance").size(13).width(Fill),
-                switch([
-                    segment(
-                        "Light",
-                        self.appearance == Appearance::Light,
-                        "Light theme",
-                        Message::SetAppearance(Appearance::Light)
-                    ),
-                    segment(
-                        "Dark",
-                        self.appearance == Appearance::Dark,
-                        "Dark theme",
-                        Message::SetAppearance(Appearance::Dark)
-                    ),
-                ]),
-            ]
-            .align_y(iced::Center),
+                segment(
+                    "Dark",
+                    self.appearance == Appearance::Dark,
+                    "Dark theme",
+                    Message::SetAppearance(Appearance::Dark)
+                ),
+            ]),
+        ]
+        .spacing(12)
+        .align_y(iced::Center);
+        let fonts_section = column![
+            text("Fonts").size(16).font(LABEL),
             self.font_control(FontTarget::Interface),
             self.font_control(FontTarget::Note),
         ]
-        .spacing(10)
-        .width(Fill);
+        .spacing(12);
+        let mut colors_section = column![text("Colors").size(16).font(LABEL),]
+            .spacing(12)
+            .width(Fill);
         for slot in ColorSlot::ALL {
-            body = body.push(self.color_control(slot));
+            colors_section = colors_section.push(self.color_control(slot));
         }
         if self.settings.has_invalid_draft() {
-            body = body.push(text("Use #RRGGBB.").size(12).color(look.danger));
+            colors_section = colors_section.push(
+                text("Enter six hex digits after #, for example #5686C4.")
+                    .size(13)
+                    .color(look.danger),
+            );
         }
-        // The accent is always used as chosen; the rest may be corrected.
         let chosen = self.customization.colors(self.appearance);
         if chosen.text != look.ink || chosen.page != look.surface || chosen.sidebar != look.panel {
-            body = body.push(
+            colors_section = colors_section.push(
                 text("Colors adjusted for contrast.")
-                    .size(11)
+                    .size(12)
                     .color(look.muted),
             );
         }
-        if let Some(error) = &self.settings.save_error {
-            body = body.push(text(error).size(12).color(look.danger));
-        }
-        body.push(
-            button(text("Reset colors").size(12))
+        colors_section = colors_section.push(
+            button(text("Reset colors").size(13))
                 .padding([8, 12])
                 .style(rounded_subtle)
                 .on_press(Message::Settings(Msg::Reset)),
-        )
-        .into()
+        );
+        let mut body = column![
+            theme_section,
+            rule::horizontal(1),
+            fonts_section,
+            rule::horizontal(1),
+            colors_section,
+        ]
+        .spacing(20)
+        .width(Fill);
+        if let Some(error) = &self.settings.save_error {
+            body = body.push(text(error).size(13).color(look.danger));
+        }
+        body.into()
     }
 
     fn font_control(&self, target: FontTarget) -> Element<'_, Message> {
@@ -271,7 +321,7 @@ impl App {
             .filter(|family| options.contains(family))
             .map_or(SYSTEM_DEFAULT, String::as_str);
         row![
-            text(target.label()).size(13).width(Fill),
+            text(target.label()).size(14).font(LABEL).width(Fill),
             pick_list(options.as_slice(), Some(chosen.to_owned()), move |choice| {
                 Message::Settings(Msg::PickFont(target, choice))
             })
@@ -314,7 +364,7 @@ impl App {
                     picker_open,
                     Message::Settings(Msg::TogglePicker(slot))
                 ),
-                text(slot.label()).size(13).width(Fill),
+                text(slot.label()).size(14).font(LABEL).width(Fill),
                 field,
             ]
             .spacing(10)

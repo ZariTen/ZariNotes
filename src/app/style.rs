@@ -257,15 +257,6 @@ pub(super) fn panel(theme: &Theme) -> container::Style {
     }
 }
 
-pub(super) fn brand_mark(theme: &Theme) -> container::Style {
-    let look = theme::tokens_of(theme);
-    container::Style {
-        background: Some(look.accent.into()),
-        border: border::rounded(10),
-        ..container::Style::default()
-    }
-}
-
 pub(super) fn writing_surface(theme: &Theme) -> container::Style {
     let look = theme::tokens_of(theme);
     container::Style {
